@@ -1,0 +1,112 @@
+openapi: 3.1.0
+info:
+  title: LINE Market Intel GPT Action API
+  version: 0.1.0
+  description: Custom GPT Action API for personal LINE and Taiwan market intelligence. Returns user-owned summaries only.
+servers:
+  - url: https://example.com
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /gpt/reports/today:
+    get:
+      operationId: getTodayReport
+      responses:
+        "200":
+          description: Today's report.
+  /gpt/reports/{date}:
+    get:
+      operationId: getReportByDate
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [premarket, intraday, postmarket, weekly]
+      responses:
+        "200":
+          description: Report for date.
+  /gpt/tickers/{ticker}/today:
+    get:
+      operationId: getTickerToday
+      parameters:
+        - name: ticker
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ticker candidates for today.
+  /gpt/tickers/{ticker}/history:
+    get:
+      operationId: getTickerHistory
+      parameters:
+        - name: ticker
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Ticker history.
+  /gpt/sectors/today:
+    get:
+      operationId: getTodaySectors
+      responses:
+        "200":
+          description: Sector rankings from today's report.
+  /gpt/holdings:
+    get:
+      operationId: getHoldings
+      responses:
+        "200":
+          description: User holdings.
+  /gpt/news/today:
+    get:
+      operationId: getTodayNews
+      responses:
+        "200":
+          description: User-provided and public news summaries.
+  /gpt/manual-pack/{date}:
+    get:
+      operationId: getManualPack
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Manual GPT pack.
+  /gpt/query:
+    post:
+      operationId: queryMarketIntel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+      responses:
+        "200":
+          description: Query response.

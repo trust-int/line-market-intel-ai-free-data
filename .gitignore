@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+.tmp/
+dist/
+.env
+data/
+coverage/
+*.log
+
+outputs/

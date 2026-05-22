@@ -1,0 +1,13 @@
+[
+  {
+    "Date": "115/05/07",
+    "IndexName": "櫃買指數",
+    "Close": "250.50",
+    "ChangePercent": "-0.30",
+    "TradingShares": "900,000,000",
+    "TransactionAmount": "80,000,000,000",
+    "AdvanceCount": "320",
+    "DeclineCount": "410",
+    "UnchangedCount": "80"
+  }
+]

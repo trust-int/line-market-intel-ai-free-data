@@ -1,0 +1,61 @@
+{
+  "name": "line-market-intel-ai-free-data",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LINE + free public Taiwan market intelligence system with manual AI mode and no paid data API by default.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "schema:print": "tsx src/db/migrations.ts",
+    "report:daily": "tsx src/jobs/reports.ts daily",
+    "live:check": "tsx src/providers/health/live-fetch-check.ts",
+    "e2e:daily": "tsx src/jobs/e2e-daily-dry-run.ts",
+    "collect:official": "tsx src/jobs/collect-official-data.ts",
+    "collect:official:today": "tsx src/jobs/collect-official-data.ts today",
+    "collect:official:range": "tsx src/jobs/collect-official-data.ts --range",
+    "line:verify": "tsx src/jobs/line-verify.ts",
+    "line:prod-check": "tsx src/jobs/line-prod-check.ts",
+    "line:test-webhook": "tsx src/jobs/line-test-webhook.ts",
+    "line:send-test-reply": "tsx src/jobs/line-send-test-reply.ts",
+    "push:report": "tsx src/jobs/push-report.ts",
+    "gpt:action:check": "tsx src/jobs/gpt-action-check.ts",
+    "gpt:action:export": "tsx src/jobs/gpt-action-production.ts export",
+    "gpt:action:smoke": "tsx src/jobs/gpt-action-production.ts smoke",
+    "prod:check": "tsx src/jobs/prod-check.ts",
+    "db:migrate": "tsx src/jobs/db-bootstrap.ts migrate",
+    "db:check": "tsx src/jobs/db-bootstrap.ts check",
+    "db:seed:dev": "tsx src/jobs/db-bootstrap.ts seed:dev",
+    "tls:diagnose": "tsx src/jobs/tls-diagnose.ts",
+    "report:save": "tsx src/jobs/report-persistence.ts save",
+    "report:load": "tsx src/jobs/report-persistence.ts load",
+    "bringup:live": "tsx src/jobs/bringup-live.ts",
+    "first-live-run": "tsx src/jobs/first-live-run.ts",
+    "snapshot": "tsx src/jobs/build-daily-market-snapshot.ts",
+    "snapshot:today": "tsx src/jobs/build-daily-market-snapshot.ts"
+  },
+  "dependencies": {
+    "bullmq": "^5.16.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "node-cron": "^3.0.3",
+    "pg": "^8.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node-cron": "^3.0.11",
+    "@types/node": "^20.14.10",
+    "@types/pg": "^8.11.6",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.3"
+  }
+}
