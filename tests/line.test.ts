@@ -42,6 +42,29 @@ describe("LINE ingestion", () => {
     expect(database.queries[0]?.params?.[4]).not.toBe("U123");
   });
 
+  it("replies to handled commands", async () => {
+    const database = new FakeDb();
+    const replies: Array<{ token: string | undefined; text: string }> = [];
+    const event: LineWebhookEvent = {
+      webhookEventId: "event-command",
+      type: "message",
+      replyToken: "reply-token",
+      source: { type: "user", userId: "U123" },
+      message: { id: "m2", type: "text", text: "/成本" }
+    };
+    await processLineEvent(event, {
+      database,
+      seen: new Set<string>(),
+      replyText: async (token, text) => {
+        replies.push({ token, text });
+        return {};
+      }
+    });
+    expect(replies).toHaveLength(1);
+    expect(replies[0]?.token).toBe("reply-token");
+    expect(replies[0]?.text).toContain("Paid data API used: false");
+  });
+
   it("handles unsend event", async () => {
     const database = new FakeDb();
     await processLineEvent(

@@ -6,6 +6,7 @@ import { db } from "../db/client.js";
 import { PrivateStorage } from "../storage/storage.js";
 import { logger } from "../utils/logger.js";
 import { downloadLineMessageContent } from "./download.js";
+import { replyLineText } from "./push.js";
 import { hashLineUserId, verifyLineSignature } from "./signature.js";
 import { handleLineCommand } from "./commands.js";
 
@@ -13,6 +14,7 @@ export type LineWebhookEvent = {
   webhookEventId?: string;
   type: string;
   timestamp?: number;
+  replyToken?: string;
   source?: {
     type?: string;
     userId?: string;
@@ -39,6 +41,7 @@ export type LineWebhookDeps = {
   database?: Queryable;
   storage?: PrivateStorage;
   downloadContent?: typeof downloadLineMessageContent;
+  replyText?: typeof replyLineText;
   seen?: Set<string>;
 };
 
@@ -84,6 +87,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
   const database = deps.database ?? db;
   const storage = deps.storage ?? new PrivateStorage();
   const downloadContent = deps.downloadContent ?? downloadLineMessageContent;
+  const replyText = deps.replyText ?? replyLineText;
   const seen = deps.seen ?? defaultSeen;
   const eventId = event.webhookEventId ?? buildFallbackEventId(event);
 
@@ -120,6 +124,9 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
           userHash: base.user_hash
         }
       });
+      if (result.handled && result.replyText) {
+        await replyText(event.replyToken, result.replyText);
+      }
       logger.info("LINE command handled", { command: result.command, handled: result.handled });
     }
     return;

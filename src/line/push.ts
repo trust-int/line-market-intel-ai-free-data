@@ -21,6 +21,26 @@ export async function pushLineText(text: string, targetId = config.linePushTarge
   return {};
 }
 
+export async function replyLineText(replyToken: string | undefined, text: string): Promise<{ skipped?: true; reason?: string }> {
+  if (!replyToken) return { skipped: true, reason: "reply_token_missing" };
+  if (!config.lineChannelAccessToken) return { skipped: true, reason: "LINE_CHANNEL_ACCESS_TOKEN_missing" };
+
+  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.lineChannelAccessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages: [{ type: "text", text: text.slice(0, 4900) }]
+    })
+  });
+
+  if (!response.ok) throw new Error(`LINE reply failed: ${response.status}`);
+  return {};
+}
+
 export function buildManualModePushMessage(packType: string, date: string): string {
   return `${date} ${packType} 資料包已完成。AI_MODE=manual 未呼叫 OpenAI API，請到 dashboard 或 manual-pack API 下載後手動分析。`;
 }
