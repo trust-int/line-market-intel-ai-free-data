@@ -268,6 +268,10 @@ components:
                     type:
                       - string
                       - "null"
+                  source:
+                    type:
+                      - string
+                      - "null"
                   related_tickers:
                     type: array
                     items:
@@ -278,7 +282,9 @@ components:
                       type: string
                   news_type:
                     type: string
-                    enum: [manual, public, mops, other]
+                    enum: [manual, manual_pack_note, image_manual, public, mops, other]
+                  event_type:
+                    type: string
                   importance:
                     type: string
                     enum: [high, medium, low]
@@ -294,6 +300,10 @@ components:
                     type: array
                     items:
                       type: string
+                  collected_at:
+                    type:
+                      - string
+                      - "null"
     SourceStatusResponse:
       allOf:
         - $ref: "#/components/schemas/GenericResponse"

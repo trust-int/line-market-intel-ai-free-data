@@ -154,6 +154,67 @@ describe("GPT MVP endpoints", () => {
     }
   });
 
+  it("/gpt/news/today/summary returns stored summary and manual news metadata", async () => {
+    vi.spyOn(db, "query").mockImplementation(async <T = unknown>(sql: string) => {
+      if (sql.includes("from news_items")) {
+        return {
+          rows: [{
+            source: "line_manual",
+            source_url: "https://example.com/news",
+            title: "測試新聞標題",
+            summary: "這是一段完整人工摘要，包含 2330 與 AI 伺服器供應鏈資訊。",
+            full_text: null,
+            tickers: ["2330"],
+            topics: ["AI伺服器"],
+            event_type: "manual",
+            event_importance: 60,
+            importance: "medium",
+            is_mops: false,
+            data_quality_score: 65,
+            data_gaps: ["full_text_missing"],
+            interpretation_limit: "title_or_summary_only",
+            license_status: "title_or_summary_only",
+            collected_at: "2026-05-24T01:00:00.000Z",
+            published_at: "2026-05-24T01:00:00.000Z",
+            fetched_at: "2026-05-24T01:00:00.000Z"
+          }] as T[],
+          rowCount: 1
+        };
+      }
+      return { rows: [] as T[], rowCount: 0 };
+    });
+
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/gpt/news/today/summary?limit=20`, { headers: authHeaders });
+      const body = await response.json() as {
+        status: string;
+        line_manual_news: Array<{
+          title: string;
+          summary: string | null;
+          source_url: string | null;
+          related_tickers: string[];
+          related_sectors: string[];
+          interpretation_limit: string;
+          data_gaps: string[];
+          collected_at: string;
+        }>;
+      };
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("ok");
+      expect(body.line_manual_news[0]?.title).toBe("測試新聞標題");
+      expect(body.line_manual_news[0]?.summary).toContain("完整人工摘要");
+      expect(body.line_manual_news[0]?.source_url).toBe("https://example.com/news");
+      expect(body.line_manual_news[0]?.related_tickers).toEqual(["2330"]);
+      expect(body.line_manual_news[0]?.related_sectors).toEqual(["AI伺服器"]);
+      expect(body.line_manual_news[0]?.interpretation_limit).toBe("title_or_summary_only");
+      expect(body.line_manual_news[0]?.data_gaps).toEqual(["full_text_missing"]);
+      expect(body.line_manual_news[0]?.collected_at).toBe("2026-05-24T01:00:00.000Z");
+    } finally {
+      close();
+    }
+  });
+
   it("/gpt/market-calendar/today marks weekends as closed", async () => {
     mockEmptyDb();
     vi.useFakeTimers();

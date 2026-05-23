@@ -4,11 +4,18 @@ import { config } from "../config.js";
 import type { Queryable } from "../db/client.js";
 import { db } from "../db/client.js";
 import { PrivateStorage } from "../storage/storage.js";
+import type { StorageProvider } from "../storage/storage.js";
 import { logger } from "../utils/logger.js";
 import { downloadLineMessageContent } from "./download.js";
 import { replyLineText } from "./push.js";
 import { hashLineUserId, verifyLineSignature } from "./signature.js";
 import { handleLineCommand } from "./commands.js";
+import { buildLineImageNewsItem, parseLineManualNewsText, upsertLineManualNewsItem } from "./manual-news.js";
+
+type ManualNewsAuth = {
+  allowedUserIds?: string[];
+  allowedUserHashes?: string[];
+};
 
 export type LineWebhookEvent = {
   webhookEventId?: string;
@@ -39,10 +46,11 @@ export type LineWebhookBody = {
 
 export type LineWebhookDeps = {
   database?: Queryable;
-  storage?: PrivateStorage;
+  storage?: StorageProvider;
   downloadContent?: typeof downloadLineMessageContent;
   replyText?: typeof replyLineText;
   seen?: Set<string>;
+  manualNewsAuth?: ManualNewsAuth;
 };
 
 const defaultSeen = new Set<string>();
@@ -114,9 +122,34 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
   };
 
   if (event.message.type === "text") {
+    const text = event.message.text ?? "";
     await insertLineMessage(database, base);
-    if (event.message.text?.startsWith("/")) {
-      const result = await handleLineCommand(event.message.text, {
+    const manualKind = detectManualNewsKind(text);
+    if (manualKind) {
+      if (!isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
+        logger.warn("unauthorized LINE manual news ingestion", {
+          line_user_id: event.source?.userId ?? null,
+          user_hash: base.user_hash
+        });
+        await replyText(event.replyToken, "unauthorized");
+        return;
+      }
+      const manualNews = parseLineManualNewsText(
+        text,
+        manualKind,
+        event.source?.userId ?? base.user_hash ?? "unknown_line_user",
+        event.timestamp ? new Date(event.timestamp) : new Date()
+      );
+      if (!manualNews) {
+        await replyText(event.replyToken, manualKind === "news" ? "格式：/news 文字內容" : "格式：/manual 文字內容");
+        return;
+      }
+      await upsertLineManualNewsItem(database, manualNews);
+      await replyText(event.replyToken, "已收錄到今日 manual news，可由 /gpt/news/today/summary 讀取。");
+      return;
+    }
+    if (text.startsWith("/")) {
+      const result = await handleLineCommand(text, {
         database,
         scope: {
           scopeType: event.source?.groupId ? "group" : event.source?.roomId ? "room" : "user",
@@ -132,7 +165,35 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
     return;
   }
 
-  if (event.message.type === "image" || event.message.type === "file") {
+  if (event.message.type === "image") {
+    let fileRow: Record<string, unknown> = {};
+    try {
+      const downloaded = await downloadContent(event.message.id);
+      const stored = await storage.putObject({
+        namespace: "line",
+        fileName: event.message.fileName ?? downloaded.fileName,
+        body: downloaded.body,
+        mimeType: downloaded.mimeType
+      });
+      fileRow = {
+        file_name: event.message.fileName ?? downloaded.fileName,
+        mime_type: downloaded.mimeType,
+        file_path: stored.filePath,
+        content_sha256: stored.sha256
+      };
+    } catch (error) {
+      logger.warn("LINE image download failed; preserving message id only", { error: String(error), messageId: event.message.id });
+    }
+    await insertLineMessage(database, {
+      ...base,
+      ...fileRow
+    });
+    await upsertLineManualNewsItem(database, buildLineImageNewsItem(event.message.id, event.timestamp ? new Date(event.timestamp) : new Date()));
+    await replyText(event.replyToken, "已收到圖片，但目前尚未 OCR，請補文字摘要或原始連結。");
+    return;
+  }
+
+  if (event.message.type === "file") {
     const downloaded = await downloadContent(event.message.id);
     const stored = await storage.putObject({
       namespace: "line",
@@ -186,4 +247,21 @@ async function markUnsent(database: Queryable, messageId: string): Promise<void>
 function buildFallbackEventId(event: LineWebhookEvent): string {
   const messagePart = event.message?.id ?? event.unsend?.messageId ?? "unknown";
   return `${event.type}:${messagePart}:${event.timestamp ?? 0}`;
+}
+
+function detectManualNewsKind(text?: string): "news" | "manual" | undefined {
+  const normalized = text?.trim().toLowerCase() ?? "";
+  if (normalized === "/news" || normalized.startsWith("/news ")) return "news";
+  if (normalized === "/manual" || normalized.startsWith("/manual ")) return "manual";
+  return undefined;
+}
+
+function isAuthorizedManualNewsUser(lineUserId?: string, userHash?: string, auth: ManualNewsAuth = {}): boolean {
+  const allowedUserIds = auth.allowedUserIds ?? config.lineAllowedUserIds;
+  const allowedUserHashes = auth.allowedUserHashes ?? config.lineAllowedUserHashes;
+  if (allowedUserIds.length === 0 && allowedUserHashes.length === 0) return true;
+  return Boolean(
+    (lineUserId && allowedUserIds.includes(lineUserId)) ||
+    (userHash && allowedUserHashes.includes(userHash))
+  );
 }

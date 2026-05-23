@@ -2,7 +2,7 @@ import express from "express";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TickerCandidate } from "../analysis/ticker-candidate-engine.js";
-import { db } from "../db/client.js";
+import { db, type Queryable } from "../db/client.js";
 import { todayTaipei } from "../utils/date.js";
 import { requireGptActionAuth } from "./auth.js";
 
@@ -29,100 +29,100 @@ type MarketCalendar = {
   };
 };
 
-export function createGptActionRouter() {
+export function createGptActionRouter(database: Queryable = db) {
   const router = express.Router();
   router.use(requireGptActionAuth);
 
   router.get("/market-calendar/today", async (_req, res) => {
-    res.json(await buildMarketCalendar(todayTaipei()));
+    res.json(await buildMarketCalendar(todayTaipei(), database));
   });
 
   router.get("/reports/latest", async (req, res) => {
     const reportType = String(req.query.type ?? "postmarket");
-    const latest = await fetchLatestReport(reportType);
-    const calendar = await buildMarketCalendar(todayTaipei());
+    const latest = await fetchLatestReport(reportType, database);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
     res.json(latest ? summarizeReport(latest.date, latest.report, calendar) : { report_type: reportType, data_gap: "report_not_found" });
   });
 
   router.get("/reports/today/summary", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(summarizeReport(report.date, report.report, calendar));
   });
 
   router.get("/reports/today/signal", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildSignalResponse(report.date, report.report));
   });
 
   router.get("/reports/today/market-snapshot", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildMarketSnapshotResponse(report.date, report.report, calendar));
   });
 
   router.get("/reports/today/sections", async (req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildSectionResponse(String(req.query.section ?? "summary"), report.date, report.report));
   });
 
   router.get("/reports/today", async (_req, res) => {
-    res.json(await fetchReport(todayTaipei(), "postmarket"));
+    res.json(await fetchReport(todayTaipei(), "postmarket", database));
   });
 
   router.get("/reports/:date", async (req, res) => {
-    res.json(await fetchReport(req.params.date, String(req.query.type ?? "postmarket")));
+    res.json(await fetchReport(req.params.date, String(req.query.type ?? "postmarket"), database));
   });
 
   router.get("/signals/today", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildSignalResponse(report.date, report.report));
   });
 
   router.get("/signals/latest", async (_req, res) => {
-    const latest = await fetchLatestReport("postmarket");
+    const latest = await fetchLatestReport("postmarket", database);
     res.json(latest ? buildSignalResponse(latest.date, latest.report) : { data_gap: "report_not_found" });
   });
 
   router.get("/sectors/today", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildSectorsResponse(report.date, report.report));
   });
 
   router.get("/candidates/today", async (req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     const requestedType = typeof req.query.type === "string" && req.query.type ? [req.query.type] : undefined;
     res.json(buildCandidatesResponse(report.date, report.report, requestedType));
   });
 
   router.get("/candidates/intraday", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildCandidatesResponse(report.date, report.report, ["daytrade_long", "daytrade_short"]));
   });
 
   router.get("/candidates/swing", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     res.json(buildCandidatesResponse(report.date, report.report, ["swing"]));
   });
 
   router.get("/tickers/:ticker/today", async (req, res) => {
     const ticker = req.params.ticker;
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     const reportCandidate = extractTickerCandidates(report.report).find((candidate) => candidate.ticker === ticker);
     if (reportCandidate) {
       res.json(buildTickerTodayResponse(report.date, reportCandidate));
       return;
     }
     try {
-      const rows = await db.query<AnyRecord>("select * from trade_candidates where report_date = $1 and ticker = $2", [report.date, ticker]);
+      const rows = await database.query<AnyRecord>("select * from trade_candidates where report_date = $1 and ticker = $2", [report.date, ticker]);
       const row = rows.rows[0];
       res.json(row ? buildTickerTodayResponse(report.date, normalizeTradeCandidateRow(row)) : buildEmptyTickerTodayResponse(report.date, ticker));
     } catch {
@@ -133,7 +133,7 @@ export function createGptActionRouter() {
   router.get("/tickers/:ticker/history", async (req, res) => {
     const days = Math.min(Number(req.query.days ?? 20), 120);
     try {
-      const rows = await db.query("select * from trade_candidates where ticker = $1 order by report_date desc limit $2", [req.params.ticker, days]);
+      const rows = await database.query("select * from trade_candidates where ticker = $1 order by report_date desc limit $2", [req.params.ticker, days]);
       res.json({ ticker: req.params.ticker, days, rows: rows.rows });
     } catch {
       res.json({ ticker: req.params.ticker, days, rows: [], data_gap: "db_unavailable" });
@@ -142,7 +142,7 @@ export function createGptActionRouter() {
 
   router.get("/holdings", async (_req, res) => {
     try {
-      const rows = await db.query("select ticker, name, qty, avg_cost, strategy, thesis, stop_loss, take_profit from holdings where active = true order by ticker");
+      const rows = await database.query("select ticker, name, qty, avg_cost, strategy, thesis, stop_loss, take_profit from holdings where active = true order by ticker");
       res.json({ rows: rows.rows });
     } catch {
       res.json({ rows: [], data_gap: "db_unavailable" });
@@ -153,14 +153,21 @@ export function createGptActionRouter() {
     const limit = Math.min(Math.max(Number(req.query.limit ?? 20), 1), 50);
     try {
       const [newsRows, lineRows] = await Promise.all([
-        db.query(
-        `select source, source_url, title, summary,
+        database.query(
+        `select source, source_url, title, summary, full_text,
                 related_tickers as tickers,
                 related_sectors as topics,
+                event_type,
                 case importance when 'high' then 90 when 'medium' then 60 when 'low' then 30 else 60 end as event_importance,
+                importance,
+                is_mops,
+                data_quality_score,
+                data_gaps,
+                interpretation_limit,
                 interpretation_limit as license_status,
                 collected_at as published_at,
-                collected_at as fetched_at
+                collected_at as fetched_at,
+                collected_at
          from news_items
          where collected_at >= now() - interval '36 hours'
          order by case importance when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end,
@@ -168,17 +175,25 @@ export function createGptActionRouter() {
          limit $1`,
         [limit]
         ),
-        db.query(
+        database.query(
           `select 'line_manual' as source,
                   null::text as source_url,
                   coalesce(extracted_text, ai_summary, raw_text) as title,
                   coalesce(extracted_text, ai_summary, raw_text) as summary,
+                  null::text as full_text,
                   tickers,
                   topics,
+                  'manual' as event_type,
                   null::numeric as event_importance,
+                  'medium' as importance,
+                  false as is_mops,
+                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then 65 else 55 end as data_quality_score,
+                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then '["full_text_missing"]'::jsonb else '["full_text_missing","summary_too_short"]'::jsonb end as data_gaps,
+                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then 'title_or_summary_only' else 'brief_manual_note_only' end as interpretation_limit,
                   'user_provided_or_forwarded' as license_status,
                   received_at as published_at,
-                  received_at as fetched_at
+                  received_at as fetched_at,
+                  received_at as collected_at
              from line_messages
             where (received_at at time zone 'Asia/Taipei')::date = $2
               and status = 'active'
@@ -208,8 +223,8 @@ export function createGptActionRouter() {
   router.get("/news/today", async (_req, res) => {
     try {
       const [newsRows, lineRows] = await Promise.all([
-        db.query("select * from news_events where fetched_at::date = $1 order by fetched_at desc", [todayTaipei()]),
-        db.query(
+        database.query("select * from news_events where fetched_at::date = $1 order by fetched_at desc", [todayTaipei()]),
+        database.query(
           `select 'line_manual' as source,
                   null::text as source_url,
                   coalesce(extracted_text, ai_summary, raw_text) as title,
@@ -234,18 +249,18 @@ export function createGptActionRouter() {
   });
 
   router.get("/manual-pack/:date/summary", async (req, res) => {
-    const report = await fetchReport(req.params.date, "postmarket");
-    const pack = await fetchManualPack(req.params.date);
+    const report = await fetchReport(req.params.date, "postmarket", database);
+    const pack = await fetchManualPack(req.params.date, database);
     res.json(buildManualPackSummary(req.params.date, report, pack));
   });
 
   router.get("/manual-pack/:date", async (req, res) => {
-    res.json(await fetchManualPack(req.params.date));
+    res.json(await fetchManualPack(req.params.date, database));
   });
 
   router.get("/sources/status", async (_req, res) => {
-    const calendar = await buildMarketCalendar(todayTaipei());
-    const report = await fetchTodayOrLatestReport("postmarket", calendar);
+    const calendar = await buildMarketCalendar(todayTaipei(), database);
+    const report = await fetchTodayOrLatestReport("postmarket", calendar, database);
     const sourceStatus = extractSourceStatus(report.report);
     res.json({
       date: report.date,
@@ -283,10 +298,10 @@ export function createGptActionRouter() {
   return router;
 }
 
-async function fetchReport(date: string, reportType: string): Promise<FetchedReport> {
+async function fetchReport(date: string, reportType: string, database: Queryable = db): Promise<FetchedReport> {
   let dbUnavailable = false;
   try {
-    const rows = await db.query<{ report_date: string; report_type: string; report_json: unknown; summary_md: string }>(
+    const rows = await database.query<{ report_date: string; report_type: string; report_json: unknown; summary_md: string }>(
       "select report_date::text, report_type, report_json, summary_md from strategy_reports where report_date = $1 and report_type = $2 limit 1",
       [date, reportType]
     );
@@ -309,10 +324,10 @@ async function fetchReport(date: string, reportType: string): Promise<FetchedRep
   return { report_json: null, summary_md: null, data_gap: dbUnavailable ? "db_unavailable" : "report_not_found" };
 }
 
-async function fetchManualPack(date: string) {
+async function fetchManualPack(date: string, database: Queryable = db) {
   let dbUnavailable = false;
   try {
-    const rows = await db.query("select pack_date, pack_type, markdown, json_payload from manual_gpt_packs where pack_date = $1 order by pack_type", [date]);
+    const rows = await database.query("select pack_date, pack_type, markdown, json_payload from manual_gpt_packs where pack_date = $1 order by pack_type", [date]);
     if (rows.rows.length) return { date, rows: rows.rows };
   } catch {
     dbUnavailable = true;
@@ -326,9 +341,9 @@ async function fetchManualPack(date: string) {
   };
 }
 
-async function fetchLatestReport(reportType: string): Promise<{ date: string; report: FetchedReport } | undefined> {
+async function fetchLatestReport(reportType: string, database: Queryable = db): Promise<{ date: string; report: FetchedReport } | undefined> {
   try {
-    const rows = await db.query<{ report_date: string; report_type: string; report_json: unknown; summary_md: string }>(
+    const rows = await database.query<{ report_date: string; report_type: string; report_json: unknown; summary_md: string }>(
       "select report_date::text, report_type, report_json, summary_md from strategy_reports where report_type = $1 order by report_date desc limit 1",
       [reportType]
     );
@@ -344,25 +359,25 @@ async function fetchLatestReport(reportType: string): Promise<{ date: string; re
       .sort()
       .at(-1);
     if (!latest) return undefined;
-    return { date: latest, report: await fetchReport(latest, reportType) };
+    return { date: latest, report: await fetchReport(latest, reportType, database) };
   } catch {
     return undefined;
   }
 }
 
-async function fetchTodayOrLatestReport(reportType: string, calendar: MarketCalendar): Promise<{ date: string; report: FetchedReport }> {
-  const todayReport = await fetchReport(calendar.today, reportType);
+async function fetchTodayOrLatestReport(reportType: string, calendar: MarketCalendar, database: Queryable = db): Promise<{ date: string; report: FetchedReport }> {
+  const todayReport = await fetchReport(calendar.today, reportType, database);
   if (todayReport.report_json || todayReport.summary_md) return { date: calendar.today, report: todayReport };
-  const tradingDayReport = await fetchReport(calendar.latest_trading_date, reportType);
+  const tradingDayReport = await fetchReport(calendar.latest_trading_date, reportType, database);
   if (tradingDayReport.report_json || tradingDayReport.summary_md) return { date: calendar.latest_trading_date, report: tradingDayReport };
   return { date: calendar.latest_trading_date, report: tradingDayReport };
 }
 
-async function buildMarketCalendar(today: string): Promise<MarketCalendar> {
+async function buildMarketCalendar(today: string, database: Queryable = db): Promise<MarketCalendar> {
   const isTradingDay = !isWeekend(today);
   const latestTradingDate = isTradingDay ? today : previousBusinessDay(today);
   const nextTradingDate = isTradingDay ? nextBusinessDay(today) : nextBusinessDay(latestTradingDate);
-  const [latestPostmarket, latestWeekly] = await Promise.all([fetchLatestReport("postmarket"), fetchLatestReport("weekly")]);
+  const [latestPostmarket, latestWeekly] = await Promise.all([fetchLatestReport("postmarket", database), fetchLatestReport("weekly", database)]);
   return {
     today,
     market_status: isTradingDay ? "open" : "closed",
@@ -889,18 +904,25 @@ function normalizeSide(value?: string): TickerCandidate["side"] {
 }
 
 function summarizeNewsRow(row: AnyRecord) {
+  const summary = getString(row, "summary");
+  const interpretationLimit = getString(row, "interpretation_limit") ?? (summary ? "title_or_summary_only" : "title_only");
+  const dataGaps = asStringArray(row.data_gaps);
   return {
     title: getString(row, "title") ?? "",
-    summary: getString(row, "summary") ?? "",
+    summary: summary ?? null,
+    full_text: getString(row, "full_text") ?? null,
     source: getString(row, "source") ?? "unknown",
-    source_url: getString(row, "source_url") ?? "",
+    source_url: getString(row, "source_url") ?? null,
     related_tickers: asStringArray(row.tickers),
     related_sectors: asStringArray(row.topics),
-    importance: classifyImportance(getNumber(row, "event_importance")),
-    is_mops: getString(row, "source")?.toLowerCase().includes("mops") ?? false,
-    interpretation_limit: getString(row, "summary") ? "title_or_summary_only" : "title_only",
-    data_quality_score: getString(row, "summary") ? 70 : 45,
-    data_gaps: getString(row, "summary") ? ["article_body_omitted"] : ["summary_missing", "article_body_omitted"],
+    news_type: getString(row, "event_type") ?? "other",
+    event_type: getString(row, "event_type") ?? "other",
+    importance: getString(row, "importance") ?? classifyImportance(getNumber(row, "event_importance")),
+    is_mops: typeof row.is_mops === "boolean" ? row.is_mops : getString(row, "source")?.toLowerCase().includes("mops") ?? false,
+    interpretation_limit: interpretationLimit,
+    data_quality_score: getNumber(row, "data_quality_score") ?? (summary ? 70 : 45),
+    data_gaps: dataGaps.length ? dataGaps : summary ? ["article_body_omitted"] : ["summary_missing", "article_body_omitted"],
+    collected_at: row.collected_at ?? row.fetched_at,
     published_at: row.published_at,
     fetched_at: row.fetched_at,
     license_status: getString(row, "license_status")

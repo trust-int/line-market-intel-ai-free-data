@@ -23,6 +23,10 @@ const numberish = (fallback: number) =>
       return Number.isFinite(parsed) ? parsed : fallback;
     });
 
+const csvish = z
+  .union([z.string(), z.undefined()])
+  .transform((value) => (value ?? "").split(/[,\s]+/).map((item) => item.trim()).filter(Boolean));
+
 const envSchema = z.object({
   nodeEnv: z.string().default("development"),
   port: numberish(3000),
@@ -62,6 +66,8 @@ const envSchema = z.object({
   lineChannelAccessToken: z.string().optional(),
   linePushTargetId: z.string().optional(),
   lineTestTargetId: z.string().optional(),
+  lineAllowedUserIds: csvish.default(""),
+  lineAllowedUserHashes: csvish.default(""),
   userHashSecret: z.string().default("change-me"),
   gptActionBearerToken: z.string().default("change-me-too")
 });
@@ -103,6 +109,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN,
     linePushTargetId: env.LINE_PUSH_TARGET_ID,
     lineTestTargetId: env.LINE_TEST_TARGET_ID,
+    lineAllowedUserIds: env.LINE_ALLOWED_USER_IDS,
+    lineAllowedUserHashes: env.LINE_ALLOWED_USER_HASHES,
     userHashSecret: env.USER_HASH_SECRET,
     gptActionBearerToken: env.GPT_ACTION_BEARER_TOKEN
   });
