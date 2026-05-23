@@ -157,15 +157,16 @@ export function createGptActionRouter() {
         `select source, source_url, title, summary,
                 related_tickers as tickers,
                 related_sectors as topics,
-                importance as event_importance,
+                case importance when 'high' then 90 when 'medium' then 60 when 'low' then 30 else 60 end as event_importance,
                 interpretation_limit as license_status,
                 collected_at as published_at,
                 collected_at as fetched_at
          from news_items
-         where collected_at::date = $2
-         order by collected_at desc
+         where collected_at >= now() - interval '36 hours'
+         order by case importance when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end,
+                  collected_at desc
          limit $1`,
-        [limit, todayTaipei()]
+        [limit]
         ),
         db.query(
           `select 'line_manual' as source,
@@ -194,9 +195,10 @@ export function createGptActionRouter() {
         date: todayTaipei(),
         limit,
         items,
+        line_manual_news: items,
         data_available: items.length > 0,
         empty_reason: items.length ? undefined : "no_news_items_or_line_manual_news",
-        data_gaps: items.length ? [] : ["news_events_empty"]
+        data_gaps: items.length ? [] : ["news_empty"]
       });
     } catch {
       res.json({ status: "empty", date: todayTaipei(), limit, items: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
