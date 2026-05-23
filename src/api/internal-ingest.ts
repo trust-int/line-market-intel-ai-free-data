@@ -73,13 +73,13 @@ export function createInternalIngestRouter(database: Queryable = db) {
             item.summary ?? null,
             item.full_text ?? null,
             item.source_url ?? null,
-            item.related_tickers,
-            item.related_sectors,
+            JSON.stringify(item.related_tickers),
+            JSON.stringify(item.related_sectors),
             item.event_type,
             item.importance,
             item.is_mops,
             item.data_quality_score,
-            item.data_gaps,
+            JSON.stringify(item.data_gaps),
             item.interpretation_limit ?? null,
             item.collected_at ?? null
           ]

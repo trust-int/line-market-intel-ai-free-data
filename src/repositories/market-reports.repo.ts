@@ -51,16 +51,16 @@ export class MarketReportsRepo {
         record.report_type,
         record.ai_mode ?? "manual",
         record.data_quality_score ?? 0,
-        record.data_gaps ?? [],
+        JSON.stringify(record.data_gaps ?? []),
         record.sample_size ?? 0,
         record.backtest_available ?? false,
         record.confidence_score ?? 0,
         record.market_bias ?? null,
         record.market_phase ?? null,
         record.big_money_strategy ?? null,
-        record.risk_flags ?? [],
+        JSON.stringify(record.risk_flags ?? []),
         record.summary ?? null,
-        record.raw_payload ?? {}
+        JSON.stringify(record.raw_payload ?? {})
       ]
     );
     return result.rows[0] ?? record;

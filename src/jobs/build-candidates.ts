@@ -181,7 +181,7 @@ export async function buildCandidates(
         0,
         Math.round(clamp(totalScore, 0, 100)),
         sampleSize,
-        riskFlags
+        JSON.stringify(riskFlags)
       ]
     );
     insertedOrUpdated += result.rowCount ?? 0;

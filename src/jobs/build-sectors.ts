@@ -90,13 +90,13 @@ export async function buildSectors(
         item.sector,
         Math.round(item.strengthScore),
         index + 1,
-        {
+        JSON.stringify({
           fundamental: "",
           chip: "",
           technical: "MVP score from candidate technical/liquidity/risk scores."
-        },
-        leaders,
-        riskFlags
+        }),
+        JSON.stringify(leaders),
+        JSON.stringify(riskFlags)
       ]
     );
     insertedOrUpdated += result.rowCount ?? 0;
