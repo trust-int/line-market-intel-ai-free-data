@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import type { Queryable } from "../db/client.js";
 import { db } from "../db/client.js";
+import { upsertDataSourceStatus } from "../repositories/data-source-status.repo.js";
+import { MarketReportsRepo } from "../repositories/market-reports.repo.js";
 import { ManualGptPacksRepo } from "../repositories/manual-gpt-packs.repo.js";
 import { StrategyReportsRepo } from "../repositories/strategy-reports.repo.js";
 import { todayTaipei } from "../utils/date.js";
@@ -13,6 +15,7 @@ export type ReportPersistenceResult = {
   date: string;
   report_type: string;
   db_unavailable?: boolean;
+  market_reports?: "saved" | "loaded" | "missing" | "skipped";
   strategy_reports?: "saved" | "loaded" | "missing" | "skipped";
   manual_gpt_packs?: "saved" | "loaded" | "missing" | "skipped";
   source?: "db" | "file" | "none";
@@ -28,7 +31,7 @@ export async function saveReportArtifacts(
 ): Promise<ReportPersistenceResult> {
   const databaseAvailable = deps.databaseAvailable ?? Boolean(config.databaseUrl);
   if (!databaseAvailable) {
-    return { ok: true, date, report_type: reportType, db_unavailable: true, strategy_reports: "skipped", manual_gpt_packs: "skipped" };
+    return { ok: true, date, report_type: reportType, db_unavailable: true, market_reports: "skipped", strategy_reports: "skipped", manual_gpt_packs: "skipped" };
   }
   const database = deps.database ?? db;
   try {
@@ -37,6 +40,32 @@ export async function saveReportArtifacts(
     const manualMarkdown = await readTextSafe(path.resolve(process.cwd(), "outputs", "manual-packs", `${date}.md`));
     const reportPayload = typeof reportJson === "object" && reportJson ? reportJson as Record<string, unknown> : {};
     const signal = reportPayload.signalEngineResult as Record<string, unknown> | undefined;
+    const payloadSize = Buffer.byteLength(reportMarkdown ?? "", "utf8") + Buffer.byteLength(JSON.stringify(reportPayload), "utf8");
+    const marketReportStatus = reportMarkdown || reportJson
+      ? await new MarketReportsRepo(database).upsertMarketReport({
+          report_date: date,
+          report_type: reportType,
+          ai_mode: config.aiMode,
+          data_quality_score: toNumber(signal?.data_quality_score, 0),
+          data_gaps: toStringArray(reportPayload.dataGaps),
+          sample_size: toNumber(reportPayload.sample_size, 0),
+          backtest_available: Boolean(reportPayload.backtest_available),
+          confidence_score: confidenceFromPayload(reportPayload, signal),
+          market_bias: typeof signal?.market_bias === "string" ? signal.market_bias : undefined,
+          market_phase: typeof signal?.market_phase === "string" ? signal.market_phase : undefined,
+          big_money_strategy: normalizeStrategy(signal?.big_money_strategy),
+          risk_flags: toStringArray(signal?.risk_flags),
+          summary: compactText(reportMarkdown ?? "", 6000) || undefined,
+          raw_payload: { ...reportPayload, db_persisted_at: new Date().toISOString() }
+        }).then(() => "saved" as const)
+      : "missing";
+    await upsertDataSourceStatus({
+      sourceName: "market_report",
+      status: marketReportStatus === "saved" ? "ok" : "empty",
+      reason: marketReportStatus === "saved" ? null : "market_report_artifact_missing",
+      lastUpdated: new Date(),
+      payloadSizeBytes: payloadSize
+    }, database).catch(() => undefined);
     const strategyStatus = reportMarkdown
       ? await new StrategyReportsRepo(database).upsertStrategyReport({
           report_date: date,
@@ -55,18 +84,56 @@ export async function saveReportArtifacts(
           json_payload: { source: "outputs/manual-packs", date, report_type: reportType }
         }).then(() => "saved" as const)
       : "missing";
-    return { ok: true, date, report_type: reportType, strategy_reports: strategyStatus, manual_gpt_packs: manualStatus };
+    return { ok: true, date, report_type: reportType, market_reports: marketReportStatus, strategy_reports: strategyStatus, manual_gpt_packs: manualStatus };
   } catch (error) {
     return {
       ok: true,
       date,
       report_type: reportType,
       db_unavailable: true,
+      market_reports: "skipped",
       strategy_reports: "skipped",
       manual_gpt_packs: "skipped",
       error: String(error)
     };
   }
+}
+
+function compactText(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > maxLength ? compact.slice(0, maxLength - 1).trimEnd() : compact;
+}
+
+function confidenceFromPayload(payload: Record<string, unknown>, signal?: Record<string, unknown>): number {
+  const strategyReport = asRecord(payload.strategyReport) ?? payload;
+  const market = asRecord(strategyReport.market);
+  const likelyPaths = Array.isArray(market?.likely_paths) ? market.likely_paths : [];
+  const firstPath = asRecord(likelyPaths[0]);
+  return toNumber(firstPath?.confidence_score, toNumber(signal?.data_quality_score, 0));
+}
+
+function normalizeStrategy(value: unknown): string | undefined {
+  if (Array.isArray(value)) return value.map(String).join(",");
+  return typeof value === "string" ? value : undefined;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function toNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 export async function loadReportArtifacts(

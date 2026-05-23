@@ -23,6 +23,7 @@ cp .env.production.example .env
 | `LINE_CHANNEL_ACCESS_TOKEN` | yes | From LINE Developers. |
 | `USER_HASH_SECRET` | yes | Long random secret for HMAC user hashing. |
 | `GPT_ACTION_BEARER_TOKEN` | yes | Bearer token for Custom GPT Action. |
+| `ADMIN_TOKEN` | yes | Bearer token for internal ingest endpoints such as `/internal/ingest/news`; do not expose to GPT Actions. |
 
 ## Optional
 

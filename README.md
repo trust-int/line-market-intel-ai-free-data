@@ -153,13 +153,28 @@ MVP 指令：
 - `strategy_reports`
 - `trade_candidates`
 - `manual_gpt_packs`
+- `market_reports`
+- `sector_strength`
+- `ticker_candidates`
+- `news_items`
+- `data_source_status`
 - `backtest_results`
 
 設定：
 
 ```env
 DATABASE_URL=postgresql://...
+ADMIN_TOKEN=內部 ingest 用長隨機字串
+GPT_ACTION_BEARER_TOKEN=Custom GPT Action Bearer token
 ```
+
+執行 migration：
+
+```bash
+npm run db:migrate
+```
+
+若只想手動套這次 MVP migration，可在 PostgreSQL/Supabase SQL editor 執行 [supabase/migrations/004_market_intel_mvp.sql](/C:/STOCK/supabase/migrations/004_market_intel_mvp.sql)。
 
 ## 資料來源啟用方式
 
@@ -372,17 +387,73 @@ Authorization: Bearer <GPT_ACTION_BEARER_TOKEN>
 
 可查：
 
+- `GET /gpt/market-calendar/today`
+- `GET /gpt/reports/today/summary`
+- `GET /gpt/signals/today`
 - `GET /gpt/reports/today`
 - `GET /gpt/reports/:date`
 - `GET /gpt/tickers/:ticker/today`
 - `GET /gpt/tickers/:ticker/history?days=20`
 - `GET /gpt/sectors/today`
+- `GET /gpt/candidates/today?type=momentum`
 - `GET /gpt/holdings`
+- `GET /gpt/news/today/summary?limit=20`
 - `GET /gpt/news/today`
+- `GET /gpt/sources/status`
 - `GET /gpt/manual-pack/:date`
 - `POST /gpt/query`
 
 API 只回傳使用者自己的資料與摘要，不回傳付費報告全文，不暴露 LINE userId。
+
+新的 compact endpoints 是給 GPT 優先使用，避免 `/gpt/reports/today` 與 `/gpt/manual-pack/:date` payload 過大。`/gpt/sectors/today`、`/gpt/candidates/today` 與新聞 summary 在沒有資料時會回 `data_available`、`empty_reason` 與 `data_gaps`，不產生假資料。
+
+內部新聞寫入端點：
+
+```http
+POST /internal/ingest/news
+Authorization: Bearer <ADMIN_TOKEN>
+```
+
+這個 endpoint 只供 crawler/admin 寫入 `news_items`，不要加到 Custom GPT Actions schema。建議流程是：
+
+```text
+crawler -> POST /internal/ingest/news -> news_items -> GET /gpt/news/today/summary -> GPT
+```
+
+候選股與族群 MVP builder：
+
+```bash
+npm run build:candidates -- today momentum
+npm run build:sectors -- today
+```
+
+Render 必要環境變數至少包含：
+
+- `DATABASE_URL`
+- `ADMIN_TOKEN`
+- `GPT_ACTION_BEARER_TOKEN`
+- 既有 LINE secrets：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`USER_HASH_SECRET`
+
+curl 驗收範例：
+
+```bash
+curl -s https://line-market-intel-ai-free-data.onrender.com/gpt/market-calendar/today -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s https://line-market-intel-ai-free-data.onrender.com/gpt/reports/today/summary -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s https://line-market-intel-ai-free-data.onrender.com/gpt/signals/today -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s https://line-market-intel-ai-free-data.onrender.com/gpt/sectors/today -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s "https://line-market-intel-ai-free-data.onrender.com/gpt/candidates/today?type=momentum" -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s "https://line-market-intel-ai-free-data.onrender.com/gpt/news/today/summary?limit=20" -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+curl -s https://line-market-intel-ai-free-data.onrender.com/gpt/sources/status -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+```
+
+內部 ingest 測試：
+
+```bash
+curl -X POST https://line-market-intel-ai-free-data.onrender.com/internal/ingest/news \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"id":"test-news-001","source":"manual_test","title":"測試新聞標題","summary":null,"full_text":null,"source_url":"https://example.com/test","related_tickers":[],"related_sectors":[],"event_type":"other","importance":"medium","is_mops":false,"data_quality_score":45,"data_gaps":["summary_missing","full_text_missing"],"interpretation_limit":"title_only"}]}'
+```
 
 檢查本地 GPT Action 可用性：
 

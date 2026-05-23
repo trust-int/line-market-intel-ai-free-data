@@ -38,7 +38,9 @@
     "bringup:live": "tsx src/jobs/bringup-live.ts",
     "first-live-run": "tsx src/jobs/first-live-run.ts",
     "snapshot": "tsx src/jobs/build-daily-market-snapshot.ts",
-    "snapshot:today": "tsx src/jobs/build-daily-market-snapshot.ts"
+    "snapshot:today": "tsx src/jobs/build-daily-market-snapshot.ts",
+    "build:candidates": "tsx src/jobs/build-candidates.ts",
+    "build:sectors": "tsx src/jobs/build-sectors.ts"
   },
   "dependencies": {
     "bullmq": "^5.16.0",

@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: Custom GPT Action API for personal LINE and Taiwan market intelligence. Returns user-owned summaries only.
 servers:
-  - url: https://example.com
+  - url: https://line-market-intel-ai-free-data.onrender.com
 security:
   - bearerAuth: []
 components:
@@ -12,13 +12,356 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+  schemas:
+    GenericResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: Request status such as ok, empty, or error.
+        data_quality_score:
+          type: number
+          description: 0 to 100 data quality score when available.
+        data_gaps:
+          type: array
+          items:
+            type: string
+          description: Known missing inputs or limitations.
+        data_available:
+          type: boolean
+          description: Whether the requested data pipeline has produced usable rows.
+        empty_reason:
+          type:
+            - string
+            - "null"
+          description: Machine-readable reason when status is empty.
+        message:
+          type:
+            - string
+            - "null"
+        error:
+          type:
+            - string
+            - "null"
+      additionalProperties: true
+    MarketCalendarResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            today:
+              type: string
+            market_status:
+              type: string
+              enum: [open_or_trading_day, closed]
+            is_trading_day:
+              type: boolean
+            latest_trading_date:
+              type:
+                - string
+                - "null"
+            next_trading_date:
+              type:
+                - string
+                - "null"
+            available_reports:
+              type: object
+              properties:
+                latest_summary:
+                  type:
+                    - string
+                    - "null"
+                latest_postmarket:
+                  type:
+                    - string
+                    - "null"
+                latest_weekly:
+                  type:
+                    - string
+                    - "null"
+    ReportSummaryResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            date:
+              type: string
+            ai_mode:
+              type: string
+            sample_size:
+              type: integer
+            backtest_available:
+              type: boolean
+            confidence_score:
+              type: number
+            signal_engine:
+              type: object
+              properties:
+                market_bias:
+                  type:
+                    - string
+                    - "null"
+                market_phase:
+                  type:
+                    - string
+                    - "null"
+                big_money_strategy:
+                  type:
+                    - string
+                    - "null"
+                risk_flags:
+                  type: array
+                  items:
+                    type: string
+            summary:
+              type:
+                - string
+                - "null"
+    SignalResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            date:
+              type: string
+            market_bias:
+              type:
+                - string
+                - "null"
+              enum: [bullish, bearish, neutral, range_bound, null]
+            market_phase:
+              type:
+                - string
+                - "null"
+              enum: [trend, range_bound, pullback, breakout, null]
+            big_money_strategy:
+              type:
+                - string
+                - "null"
+              enum: [wait_and_see, accumulate, distribute, rotate, null]
+            risk_flags:
+              type: array
+              items:
+                type: string
+            confidence_score:
+              type: number
+            sample_size:
+              type: integer
+            backtest_available:
+              type: boolean
+    SectorStrengthResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            sector_strength:
+              type: array
+              items:
+                type: object
+                properties:
+                  sector:
+                    type: string
+                  strength_score:
+                    type: number
+                  rank:
+                    type: integer
+                  reason:
+                    type: object
+                    additionalProperties: true
+                  leaders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ticker:
+                          type: string
+                        name:
+                          type:
+                            - string
+                            - "null"
+                  risk_flags:
+                    type: array
+                    items:
+                      type: string
+    CandidateResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            ticker_candidates:
+              type: array
+              items:
+                type: object
+                properties:
+                  ticker:
+                    type: string
+                  name:
+                    type:
+                      - string
+                      - "null"
+                  sector:
+                    type:
+                      - string
+                      - "null"
+                  candidate_type:
+                    type: string
+                  total_score:
+                    type: number
+                  scores:
+                    type: object
+                    properties:
+                      liquidity_score:
+                        type: number
+                      volatility_score:
+                        type: number
+                      chip_score:
+                        type: number
+                      technical_score:
+                        type: number
+                      sector_score:
+                        type: number
+                      risk_score:
+                        type: number
+                  entry_zone:
+                    type:
+                      - string
+                      - "null"
+                  exit_zone:
+                    type:
+                      - string
+                      - "null"
+                  stop_loss:
+                    type:
+                      - string
+                      - "null"
+                  position_pct:
+                    type: number
+                  confidence_score:
+                    type: number
+                  sample_size:
+                    type: integer
+                  risk_flags:
+                    type: array
+                    items:
+                      type: string
+    NewsSummaryResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            line_manual_news:
+              type: array
+              items:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  summary:
+                    type:
+                      - string
+                      - "null"
+                  full_text:
+                    type:
+                      - string
+                      - "null"
+                  source_url:
+                    type:
+                      - string
+                      - "null"
+                  related_tickers:
+                    type: array
+                    items:
+                      type: string
+                  related_sectors:
+                    type: array
+                    items:
+                      type: string
+                  news_type:
+                    type: string
+                    enum: [manual, public, mops, other]
+                  importance:
+                    type: string
+                    enum: [high, medium, low]
+                  is_mops:
+                    type: boolean
+                  interpretation_limit:
+                    type:
+                      - string
+                      - "null"
+                  data_quality_score:
+                    type: number
+                  data_gaps:
+                    type: array
+                    items:
+                      type: string
+    SourceStatusResponse:
+      allOf:
+        - $ref: "#/components/schemas/GenericResponse"
+        - type: object
+          properties:
+            sources:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  status:
+                    type: string
+                    enum: [ok, empty, error, too_large]
+                  reason:
+                    type:
+                      - string
+                      - "null"
+                  last_updated:
+                    type:
+                      - string
+                      - "null"
+                  payload_size_bytes:
+                    type:
+                      - integer
+                      - "null"
 paths:
+  /gpt/market-calendar/today:
+    get:
+      operationId: getMarketCalendarToday
+      responses:
+        "200":
+          description: Taiwan market calendar status and latest report dates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketCalendarResponse"
+  /gpt/reports/today/summary:
+    get:
+      operationId: getTodayReportSummary
+      responses:
+        "200":
+          description: Compact report summary for GPT Actions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportSummaryResponse"
+  /gpt/signals/today:
+    get:
+      operationId: getTodaySignals
+      responses:
+        "200":
+          description: Compact signal engine fields.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalResponse"
   /gpt/reports/today:
     get:
       operationId: getTodayReport
       responses:
         "200":
-          description: Today's report.
+          description: Today's full report, retained for compatibility.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
   /gpt/reports/{date}:
     get:
       operationId: getReportByDate
@@ -36,6 +379,10 @@ paths:
       responses:
         "200":
           description: Report for date.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
   /gpt/tickers/{ticker}/today:
     get:
       operationId: getTickerToday
@@ -48,6 +395,10 @@ paths:
       responses:
         "200":
           description: Ticker candidates for today.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
   /gpt/tickers/{ticker}/history:
     get:
       operationId: getTickerHistory
@@ -65,24 +416,84 @@ paths:
       responses:
         "200":
           description: Ticker history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
   /gpt/sectors/today:
     get:
       operationId: getTodaySectors
       responses:
         "200":
-          description: Sector rankings from today's report.
+          description: Sector strength with explicit empty reasons.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SectorStrengthResponse"
+  /gpt/candidates/today:
+    get:
+      operationId: getTodayCandidates
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [momentum, intraday, swing, watchlist]
+            default: momentum
+      responses:
+        "200":
+          description: Independent compact ticker candidate list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateResponse"
   /gpt/holdings:
     get:
       operationId: getHoldings
       responses:
         "200":
           description: User holdings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+  /gpt/news/today/summary:
+    get:
+      operationId: getTodayNewsSummary
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+      responses:
+        "200":
+          description: Compact in-database news summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NewsSummaryResponse"
   /gpt/news/today:
     get:
       operationId: getTodayNews
       responses:
         "200":
           description: User-provided and public news summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
+  /gpt/sources/status:
+    get:
+      operationId: getSourcesStatus
+      responses:
+        "200":
+          description: Data source status table.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceStatusResponse"
   /gpt/manual-pack/{date}:
     get:
       operationId: getManualPack
@@ -95,6 +506,10 @@ paths:
       responses:
         "200":
           description: Manual GPT pack.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"
   /gpt/query:
     post:
       operationId: queryMarketIntel
@@ -110,3 +525,7 @@ paths:
       responses:
         "200":
           description: Query response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenericResponse"

@@ -13,6 +13,11 @@ export const REQUIRED_TABLES = [
   "strategy_reports",
   "trade_candidates",
   "manual_gpt_packs",
+  "market_reports",
+  "sector_strength",
+  "ticker_candidates",
+  "news_items",
+  "data_source_status",
   "backtest_results"
 ] as const;
 

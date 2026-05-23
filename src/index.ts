@@ -8,6 +8,7 @@ import { createDataSourceRouter } from "./api/data-source.js";
 import { createGptActionRouter } from "./api/gpt-action.js";
 import { createHealthRouter } from "./api/health.js";
 import { createHoldingsRouter } from "./api/holdings.js";
+import { createInternalIngestRouter } from "./api/internal-ingest.js";
 import { createReportsRouter } from "./api/reports.js";
 import { createWatchlistRouter } from "./api/watchlist.js";
 import { createLineWebhookRouter } from "./line/webhook.js";
@@ -38,6 +39,7 @@ export function createApp() {
   app.use("/api/watchlist", createWatchlistRouter());
   app.use("/api/data-sources", createDataSourceRouter());
   app.use("/gpt", createGptActionRouter());
+  app.use("/internal", createInternalIngestRouter());
 
   return app;
 }
