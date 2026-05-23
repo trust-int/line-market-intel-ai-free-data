@@ -128,7 +128,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
     if (manualKind) {
       if (!isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
         logger.warn("unauthorized LINE manual news ingestion", {
-          line_user_id: event.source?.userId ?? null,
+          has_line_user_id: Boolean(event.source?.userId),
           user_hash: base.user_hash
         });
         await replyText(event.replyToken, "unauthorized");
@@ -137,7 +137,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
       const manualNews = parseLineManualNewsText(
         text,
         manualKind,
-        event.source?.userId ?? base.user_hash ?? "unknown_line_user",
+        event.message.id,
         event.timestamp ? new Date(event.timestamp) : new Date()
       );
       if (!manualNews) {

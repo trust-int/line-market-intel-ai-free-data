@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Queryable } from "../db/client.js";
 
 export type LineManualNewsKind = "news" | "manual";
@@ -21,10 +20,20 @@ export type LineManualNewsItem = {
   collected_at?: string;
 };
 
+const sectorRules: Array<{ sector: string; keywords: string[] }> = [
+  { sector: "AI伺服器", keywords: ["AI", "AI伺服器", "GB200", "伺服器"] },
+  { sector: "PCB", keywords: ["PCB", "ABF", "CCL", "載板"] },
+  { sector: "散熱", keywords: ["散熱", "水冷", "液冷"] },
+  { sector: "記憶體", keywords: ["DRAM", "NAND", "記憶體"] },
+  { sector: "半導體封測", keywords: ["CoWoS", "先進封裝", "封測"] },
+  { sector: "機器人", keywords: ["機器人"] },
+  { sector: "軍工", keywords: ["軍工", "無人機"] }
+];
+
 export function parseLineManualNewsText(
   text: string,
   kind: LineManualNewsKind,
-  lineUserId: string,
+  messageId: string,
   collectedAt = new Date()
 ): LineManualNewsItem | null {
   const prefix = kind === "news" ? "/news" : "/manual";
@@ -33,23 +42,31 @@ export function parseLineManualNewsText(
   if (!body) return null;
   const timestamp = collectedAt.toISOString();
   const isManualPackNote = kind === "manual";
-  const id = createHash("sha256").update(`${lineUserId}${body}${timestamp}`).digest("hex");
+  const sourceUrl = extractFirstUrl(body);
+  const bodyWithoutUrls = normalizeText(body.replace(/https?:\/\/\S+/gi, ""));
+  const urlOnly = Boolean(sourceUrl) && bodyWithoutUrls.length === 0;
+  const baseScore = urlOnly ? 45 : body.length >= 80 ? 65 : 55;
+  const dataGaps = [
+    "full_text_missing",
+    !sourceUrl && "source_url_missing",
+    body.length < 80 && "summary_too_short"
+  ].filter((gap): gap is string => Boolean(gap));
 
   return {
-    id,
+    id: `line-${kind}-${messageId}`,
     source: isManualPackNote ? "line_manual_pack" : "line_manual",
     title: body.slice(0, 80),
     summary: body,
     full_text: null,
-    source_url: null,
+    source_url: sourceUrl,
     related_tickers: extractTaiwanTickers(body),
-    related_sectors: [],
+    related_sectors: classifyRelatedSectors(body),
     event_type: isManualPackNote ? "manual_pack_note" : "manual",
     importance: "medium",
     is_mops: false,
-    data_quality_score: isManualPackNote ? 65 : 60,
-    data_gaps: ["full_text_missing", "manual_source"],
-    interpretation_limit: "title_or_summary_only",
+    data_quality_score: isManualPackNote ? Math.min(baseScore + 5, 70) : baseScore,
+    data_gaps: dataGaps,
+    interpretation_limit: urlOnly ? "link_only" : body.length >= 80 ? "title_or_summary_only" : "brief_manual_note_only",
     collected_at: timestamp
   };
 }
@@ -119,6 +136,17 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
 
 export function extractTaiwanTickers(text: string): string[] {
   return Array.from(new Set(text.match(/(?<!\d)\d{4}(?!\d)/g) ?? []));
+}
+
+export function extractFirstUrl(text: string): string | null {
+  return text.match(/https?:\/\/\S+/i)?.[0] ?? null;
+}
+
+export function classifyRelatedSectors(text: string): string[] {
+  const upperText = text.toUpperCase();
+  return sectorRules
+    .filter((rule) => rule.keywords.some((keyword) => upperText.includes(keyword.toUpperCase())))
+    .map((rule) => rule.sector);
 }
 
 export function normalizeText(text: string): string {
