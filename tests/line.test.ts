@@ -127,9 +127,9 @@ describe("LINE ingestion", () => {
     expect(params?.[8]).toBe("manual");
     expect(params?.[9]).toBe("medium");
     expect(params?.[10]).toBe(false);
-    expect(params?.[11]).toBe(60);
-    expect(JSON.parse(String(params?.[12]))).toEqual(["full_text_missing", "manual_source"]);
-    expect(params?.[13]).toBe("title_or_summary_only");
+    expect(params?.[11]).toBe(55);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["full_text_missing", "source_url_missing", "summary_too_short"]));
+    expect(params?.[13]).toBe("brief_manual_note_only");
     expect(replies[0]).toBe("已收錄到今日 manual news，可由 /gpt/news/today/summary 讀取。");
   });
 
@@ -144,9 +144,9 @@ describe("LINE ingestion", () => {
     const params = findNewsInsert(database);
     expect(params?.[1]).toBe("line_manual_pack");
     expect(params?.[8]).toBe("manual_pack_note");
-    expect(params?.[11]).toBe(65);
-    expect(JSON.parse(String(params?.[12]))).toEqual(["full_text_missing", "manual_source"]);
-    expect(params?.[13]).toBe("title_or_summary_only");
+    expect(params?.[11]).toBe(60);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["full_text_missing", "source_url_missing", "summary_too_short"]));
+    expect(params?.[13]).toBe("brief_manual_note_only");
   });
 
   it("extracts related_tickers from /news and /manual", async () => {
@@ -159,11 +159,11 @@ describe("LINE ingestion", () => {
     });
     const params = findNewsInsert(database);
     expect(JSON.parse(String(params?.[6]))).toEqual(["2330", "2454"]);
-    expect(JSON.parse(String(params?.[7]))).toEqual([]);
-    expect(JSON.parse(String(params?.[12]))).toEqual(["full_text_missing", "manual_source"]);
+    expect(JSON.parse(String(params?.[7]))).toEqual(expect.arrayContaining(["AI伺服器", "PCB", "散熱", "記憶體"]));
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["full_text_missing", "source_url_missing", "summary_too_short"]));
   });
 
-  it("/news keeps urls as manual text without extracting source_url", async () => {
+  it("/news extracts source_url and keeps the full body in summary", async () => {
     const database = new FakeDb();
     const body =
       "2330 台積電與 2454 聯發科受 AI 伺服器、PCB、散熱、記憶體 需求帶動，市場關注 GB200 與水冷供應鏈。完整連結 https://example.com/news/ai-pcb-thermal-memory";
@@ -176,14 +176,14 @@ describe("LINE ingestion", () => {
 
     const params = findNewsInsert(database);
     expect(params?.[3]).toBe(body);
-    expect(params?.[5]).toBeNull();
+    expect(params?.[5]).toBe("https://example.com/news/ai-pcb-thermal-memory");
     expect(JSON.parse(String(params?.[6]))).toEqual(["2330", "2454"]);
-    expect(JSON.parse(String(params?.[7]))).toEqual([]);
-    expect(params?.[11]).toBe(60);
+    expect(JSON.parse(String(params?.[7]))).toEqual(expect.arrayContaining(["AI伺服器", "PCB", "散熱", "記憶體"]));
+    expect(params?.[11]).toBe(65);
     expect(params?.[13]).toBe("title_or_summary_only");
   });
 
-  it("/news URL-only notes are still manual summaries", async () => {
+  it("/news URL-only notes are link_only", async () => {
     const database = new FakeDb();
     await processLineEvent(textEvent("/news https://example.com/link-only", "event-link-only"), {
       database,
@@ -195,10 +195,11 @@ describe("LINE ingestion", () => {
     const params = findNewsInsert(database);
     const gaps = JSON.parse(String(params?.[12]));
     expect(params?.[3]).toBe("https://example.com/link-only");
-    expect(params?.[5]).toBeNull();
-    expect(params?.[11]).toBe(60);
-    expect(params?.[13]).toBe("title_or_summary_only");
-    expect(gaps).toEqual(["full_text_missing", "manual_source"]);
+    expect(params?.[5]).toBe("https://example.com/link-only");
+    expect(params?.[11]).toBe(45);
+    expect(params?.[13]).toBe("link_only");
+    expect(gaps).toContain("summary_too_short");
+    expect(gaps).not.toContain("source_url_missing");
   });
 
   it("does not write news_items for unauthorized LINE user", async () => {
@@ -249,9 +250,9 @@ describe("LINE ingestion", () => {
       expect(body.line_manual_news[0]?.summary).toContain("AI 題材同步升溫");
       expect(body.line_manual_news[0]?.source_url).toBeNull();
       expect(body.line_manual_news[0]?.related_tickers).toEqual(["2330", "2454"]);
-      expect(body.line_manual_news[0]?.related_sectors).toEqual([]);
-      expect(body.line_manual_news[0]?.interpretation_limit).toBe("title_or_summary_only");
-      expect(body.line_manual_news[0]?.data_gaps).toEqual(["full_text_missing", "manual_source"]);
+      expect(body.line_manual_news[0]?.related_sectors).toEqual(["AI伺服器"]);
+      expect(body.line_manual_news[0]?.interpretation_limit).toBe("brief_manual_note_only");
+      expect(body.line_manual_news[0]?.data_gaps).toContain("summary_too_short");
       expect(body.line_manual_news[0]?.collected_at).toBe("2026-05-24T01:00:00.000Z");
     } finally {
       close();
