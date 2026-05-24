@@ -2,6 +2,7 @@ import express from "express";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TickerCandidate } from "../analysis/ticker-candidate-engine.js";
+import { config } from "../config.js";
 import { db, type Queryable } from "../db/client.js";
 import { manualNewsWindowTaipei, todayTaipei } from "../utils/date.js";
 import { requireGptActionAuth } from "./auth.js";
@@ -154,7 +155,7 @@ export function createGptActionRouter(database: Queryable = db) {
     const newsWindow = manualNewsWindowTaipei();
     try {
       const newsRows = await database.query(
-        `select source, source_url, title, summary, full_text,
+        `select id, source, source_url, title, summary, full_text,
                 related_tickers as tickers,
                 related_sectors as topics,
                 event_type,
@@ -203,6 +204,44 @@ export function createGptActionRouter(database: Queryable = db) {
       });
     } catch {
       res.json({ status: "empty", date: newsWindow.date, manual_news_window: newsWindow, limit, items: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
+    }
+  });
+
+  router.get("/news/:id/full-text", async (req, res) => {
+    const newsWindow = manualNewsWindowTaipei();
+    const maxChars = Math.min(Math.max(Number(req.query.max_chars ?? config.fileFullTextMaxChars), 1), config.fileFullTextMaxChars);
+    try {
+      const rows = await database.query<AnyRecord>(
+        `select id, source, title, summary, full_text, interpretation_limit, data_quality_score, data_gaps, collected_at
+           from news_items
+          where id = $1
+            and collected_at >= $2::timestamptz
+            and collected_at < $3::timestamptz
+            and coalesce(status, 'active') = 'active'
+          limit 1`,
+        [req.params.id, newsWindow.start, newsWindow.end]
+      );
+      const row = rows.rows[0];
+      if (!row) {
+        res.status(404).json({ status: "not_found", id: req.params.id, data_gaps: ["news_item_not_found_or_archived"] });
+        return;
+      }
+      const fullText = getString(row, "full_text") ?? getString(row, "summary") ?? "";
+      res.json({
+        status: "ok",
+        id: row.id,
+        source: row.source,
+        title: row.title,
+        text: fullText.slice(0, maxChars),
+        text_chars: fullText.length,
+        truncated: fullText.length > maxChars,
+        interpretation_limit: row.interpretation_limit,
+        data_quality_score: row.data_quality_score,
+        data_gaps: row.data_gaps,
+        collected_at: row.collected_at
+      });
+    } catch {
+      res.json({ status: "empty", id: req.params.id, data_gaps: ["db_unavailable"] });
     }
   });
 
@@ -892,13 +931,19 @@ function normalizeSide(value?: string): TickerCandidate["side"] {
 }
 
 function summarizeNewsRow(row: AnyRecord) {
-  const summary = getString(row, "summary");
+  const rawSummary = getString(row, "summary");
+  const rawFullText = getString(row, "full_text");
+  const summary = rawSummary ? rawSummary.slice(0, config.fileTextMaxChars) : undefined;
+  const fullTextPreviewMax = Math.min(config.fileTextMaxChars, 2000);
   const interpretationLimit = getString(row, "interpretation_limit") ?? (summary ? "title_or_summary_only" : "title_only");
   const dataGaps = asStringArray(row.data_gaps);
   return {
+    id: getString(row, "id") ?? undefined,
     title: getString(row, "title") ?? "",
     summary: summary ?? null,
-    full_text: getString(row, "full_text") ?? null,
+    full_text: rawFullText ? rawFullText.slice(0, fullTextPreviewMax) : null,
+    has_full_text: Boolean(rawFullText),
+    full_text_chars: rawFullText?.length ?? 0,
     source: getString(row, "source") ?? "unknown",
     source_url: getString(row, "source_url") ?? null,
     related_tickers: asStringArray(row.tickers),

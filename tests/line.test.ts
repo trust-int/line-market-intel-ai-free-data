@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { createGptActionRouter } from "../src/api/gpt-action.js";
 import { config } from "../src/config.js";
 import type { Queryable } from "../src/db/client.js";
+import type { FileExtractionStatus, FileTextExtractor } from "../src/line/file-text-extractor.js";
+import type { OcrService, OcrStatus } from "../src/line/ocr-service.js";
 import { processLineEvent, type LineWebhookEvent } from "../src/line/webhook.js";
 import { hashLineUserId, verifyLineSignature } from "../src/line/signature.js";
 import type { StorageProvider } from "../src/storage/storage.js";
@@ -30,7 +32,8 @@ class FakeDb implements Queryable {
         data_quality_score: params?.[11],
         data_gaps: JSON.parse(String(params?.[12] ?? "[]")),
         interpretation_limit: params?.[13],
-        collected_at: "2026-05-24T01:00:00.000Z"
+        collected_at: "2026-05-24T01:00:00.000Z",
+        metadata: JSON.parse(String(params?.[15] ?? "{}"))
       };
       this.newsItems = this.newsItems.filter((item) => item.id !== row.id);
       this.newsItems.push(row);
@@ -265,34 +268,18 @@ describe("LINE ingestion", () => {
     expect(database.queries.some((query) => query.sql.includes("insert into news_items"))).toBe(false);
   });
 
-  it("image messages are recorded without OCR and ask for text context", async () => {
+  it("OCR_ENABLED=false image messages write line_image_manual with OCR disabled gaps", async () => {
     const database = new FakeDb();
     const replies: string[] = [];
-    const storage: StorageProvider = {
-      async putObject(params) {
-        return {
-          filePath: `/tmp/${params.fileName}`,
-          sha256: "image-sha",
-          bytes: params.body.length,
-          mimeType: params.mimeType
-        };
-      }
-    };
 
     await processLineEvent(
-      {
-        webhookEventId: "event-image",
-        type: "message",
-        replyToken: "reply-token",
-        timestamp: Date.parse("2026-05-24T01:00:00Z"),
-        source: { type: "user", userId: "U123" },
-        message: { id: "image-1", type: "image" }
-      },
+      imageEvent("image-disabled", "event-image-disabled"),
       {
         database,
-        storage,
+        storage: fakeStorage(),
         seen: new Set<string>(),
         downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-1.png" }),
+        ocrConfig: { enabled: false },
         replyText: async (_token, text) => {
           replies.push(text);
           return {};
@@ -305,7 +292,281 @@ describe("LINE ingestion", () => {
     expect(params?.[2]).toBe("LINE image message");
     expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["image_only", "ocr_not_available", "text_missing"]));
     expect(params?.[13]).toBe("image_without_ocr");
-    expect(replies[0]).toContain("尚未 OCR");
+    expect(JSON.parse(String(params?.[15]))).toMatchObject({
+      user_hash: expect.any(String),
+      message_id: "image-disabled",
+      message_type: "image",
+      image_hash: "image-sha",
+      image_size_bytes: 5,
+      ocr_provider: "tesseract",
+      ocr_enabled: false,
+      ocr_status: "disabled",
+      ocr_text_length: 0
+    });
+    expect(replies[0]).toBe("已收到圖片，但目前 OCR 未啟用。請補 /news 文字摘要或原始連結。");
+  });
+
+  it("OCR success image messages write line_image_ocr and are readable from news summary", async () => {
+    const database = new FakeDb();
+    const replies: string[] = [];
+    const text = "2330 台積電與 2454 聯發科受 AI 伺服器、PCB、散熱、記憶體需求帶動，市場關注 GB200 與液冷供應鏈，後續仍需確認成交量、外資買賣超與官方資料。";
+
+    await processLineEvent(imageEvent("image-ocr", "event-image-ocr"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-ocr.png" }),
+      ocrConfig: { enabled: true, minTextLength: 10, maxImageBytes: 5242880 },
+      ocrService: fakeOcrService("success", text),
+      replyText: async (_token, reply) => {
+        replies.push(reply);
+        return {};
+      }
+    });
+
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_image_ocr");
+    expect(params?.[3]).toBe(text);
+    expect(JSON.parse(String(params?.[6]))).toEqual(["2330", "2454"]);
+    expect(JSON.parse(String(params?.[7]))).toEqual(expect.arrayContaining(["AI伺服器", "PCB", "散熱", "記憶體"]));
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["ocr_extracted_text", "source_url_missing"]));
+    expect(params?.[13]).toBe("ocr_text_available");
+    expect(replies[0]).toBe("已收到圖片並完成 OCR，已收錄到今日 manual news，可由 /gpt/news/today/summary 讀取。");
+
+    const { base, close } = await startGptRouter(database);
+    try {
+      const response = await fetch(`${base}/gpt/news/today/summary?limit=20`, {
+        headers: { Authorization: `Bearer ${config.gptActionBearerToken}` }
+      });
+      const body = await response.json() as { line_manual_news: Array<{ source: string; summary: string; related_tickers: string[] }> };
+      expect(response.status).toBe(200);
+      expect(body.line_manual_news[0]?.source).toBe("line_image_ocr");
+      expect(body.line_manual_news[0]?.summary).toContain("台積電");
+      expect(body.line_manual_news[0]?.related_tickers).toEqual(["2330", "2454"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("OCR success with short text is marked brief_ocr_text_only", async () => {
+    const database = new FakeDb();
+    await processLineEvent(imageEvent("image-short-success", "event-image-short-success"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-short.png" }),
+      ocrConfig: { enabled: true, minTextLength: 10 },
+      ocrService: fakeOcrService("success", "2330 AI 題材"),
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_image_ocr");
+    expect(params?.[11]).toBe(55);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["ocr_extracted_text", "summary_too_short"]));
+    expect(params?.[13]).toBe("brief_ocr_text_only");
+  });
+
+  it("OCR enabled but empty text writes image_manual with ocr_failed", async () => {
+    const database = new FakeDb();
+    const replies: string[] = [];
+    await processLineEvent(imageEvent("image-empty", "event-image-empty"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-empty.png" }),
+      ocrConfig: { enabled: true, minTextLength: 10 },
+      ocrService: fakeOcrService("failed", ""),
+      replyText: async (_token, text) => {
+        replies.push(text);
+        return {};
+      }
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_image_manual");
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["ocr_failed", "text_missing"]));
+    expect(params?.[13]).toBe("image_without_ocr");
+    expect(replies[0]).toBe("已收到圖片，但 OCR 未取得有效文字。請補 /news 文字摘要或原始連結。");
+  });
+
+  it("large image skips OCR and records image_too_large", async () => {
+    const database = new FakeDb();
+    const calls: string[] = [];
+    await processLineEvent(imageEvent("image-large", "event-image-large"), {
+      database,
+      storage: fakeStorage(6),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image!"), mimeType: "image/png", fileName: "image-large.png" }),
+      ocrConfig: { enabled: true, maxImageBytes: 5 },
+      ocrService: {
+        async recognizeImage() {
+          calls.push("called");
+          return { status: "success", provider: "tesseract", text: "should not run", textLength: 14 };
+        }
+      },
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(calls).toHaveLength(0);
+    expect(params?.[11]).toBe(25);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["image_too_large", "ocr_skipped", "text_missing"]));
+    expect(params?.[13]).toBe("image_without_ocr");
+  });
+
+  it("does not download or write image news_items for unauthorized LINE user", async () => {
+    const database = new FakeDb();
+    const replies: string[] = [];
+    const downloads: string[] = [];
+    await processLineEvent(imageEvent("image-unauthorized", "event-image-unauthorized"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U999"] },
+      downloadContent: async () => {
+        downloads.push("called");
+        return { body: Buffer.from("image"), mimeType: "image/png", fileName: "image.png" };
+      },
+      replyText: async (_token, text) => {
+        replies.push(text);
+        return {};
+      }
+    });
+    expect(downloads).toHaveLength(0);
+    expect(database.queries.some((query) => query.sql.includes("insert into news_items"))).toBe(false);
+    expect(database.queries.some((query) => query.sql.includes("insert into line_messages"))).toBe(false);
+    expect(replies).toEqual(["unauthorized"]);
+  });
+
+  it("/清空今日新聞 archives image OCR and image manual items", async () => {
+    const database = new FakeDb();
+    await processLineEvent(textEvent("/清空今日新聞", "event-clear-images"), {
+      database,
+      seen: new Set<string>(),
+      replyText: async () => ({})
+    });
+    const archiveQuery = database.queries.find((query) => query.sql.includes("update news_items"));
+    expect(archiveQuery?.sql).toContain("line_image_ocr");
+    expect(archiveQuery?.sql).toContain("line_image_manual");
+    expect(archiveQuery?.sql).toContain("line_file_text");
+    expect(archiveQuery?.sql).toContain("line_file_manual");
+  });
+
+  it("/gpt/news/today/summary returns OCR failed rows with null summary and data_gaps", async () => {
+    const database = new FakeDb();
+    await processLineEvent(imageEvent("image-summary-failed", "event-image-summary-failed"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-failed.png" }),
+      ocrConfig: { enabled: true, minTextLength: 10 },
+      ocrService: fakeOcrService("failed", ""),
+      replyText: async () => ({})
+    });
+
+    const { base, close } = await startGptRouter(database);
+    try {
+      const response = await fetch(`${base}/gpt/news/today/summary?limit=20`, {
+        headers: { Authorization: `Bearer ${config.gptActionBearerToken}` }
+      });
+      const body = await response.json() as { line_manual_news: Array<{ source: string; summary: string | null; data_gaps: string[] }> };
+      expect(response.status).toBe(200);
+      expect(body.line_manual_news[0]?.source).toBe("line_image_manual");
+      expect(body.line_manual_news[0]?.summary).toBeNull();
+      expect(body.line_manual_news[0]?.data_gaps).toEqual(expect.arrayContaining(["ocr_failed", "text_missing"]));
+    } finally {
+      close();
+    }
+  });
+
+  it("file message txt extracts text into line_file_text", async () => {
+    const database = new FakeDb();
+    const text = "2330 台積電與 2454 聯發科 AI 伺服器、PCB、散熱、記憶體 供應鏈觀察。後續仍需確認成交量、法人買賣超與官方資料，並比對大盤風險與產業新聞，不直接作為買進依據。";
+    await processLineEvent(fileEvent("file-txt", "event-file-txt", "note.txt"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from(text, "utf8"), mimeType: "text/plain", fileName: "note.txt" }),
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_file_text");
+    expect(params?.[3]).toContain("台積電");
+    expect(params?.[4]).toContain("聯發科");
+    expect(JSON.parse(String(params?.[6]))).toEqual(["2330", "2454"]);
+    expect(JSON.parse(String(params?.[7]))).toEqual(expect.arrayContaining(["AI伺服器", "PCB", "散熱", "記憶體"]));
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["file_extracted_text", "source_url_missing"]));
+    expect(params?.[13]).toBe("short_file_text_available");
+  });
+
+  it("file message pdf with text mock writes file_text_available", async () => {
+    const database = new FakeDb();
+    const text = "2330 台積電法說會摘要：AI 伺服器需求延續，CoWoS 先進封裝產能擴張，2454 聯發科同步受惠。仍需搭配成交量、法人買賣超、融資融券與大盤風險確認，不直接作為買進依據。".repeat(4);
+    await processLineEvent(fileEvent("file-pdf", "event-file-pdf", "report.pdf"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("%PDF fake"), mimeType: "application/pdf", fileName: "report.pdf" }),
+      fileTextExtractor: fakeFileTextExtractor("success", text, "pdf"),
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_file_text");
+    expect(params?.[3]).toContain("CoWoS");
+    expect(params?.[13]).toBe("file_text_available");
+  });
+
+  it("unsupported file writes line_file_manual with file_type_not_supported", async () => {
+    const database = new FakeDb();
+    await processLineEvent(fileEvent("file-unsupported", "event-file-unsupported", "archive.zip"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("zip"), mimeType: "application/zip", fileName: "archive.zip" }),
+      fileTextExtractor: fakeFileTextExtractor("unsupported", null, "unsupported", ["file_only", "file_type_not_supported", "text_missing"]),
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_file_manual");
+    expect(params?.[2]).toBe("archive.zip");
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["file_type_not_supported", "text_missing"]));
+    expect(params?.[13]).toBe("file_without_text");
+  });
+
+  it("oversized file records file_too_large and skips extraction", async () => {
+    const database = new FakeDb();
+    await processLineEvent(fileEvent("file-large", "event-file-large", "large.txt"), {
+      database,
+      storage: fakeStorage(11),
+      seen: new Set<string>(),
+      fileIngestConfig: { maxBytes: 10 },
+      downloadContent: async () => ({ body: Buffer.from("large file!!"), mimeType: "text/plain", fileName: "large.txt" }),
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_file_manual");
+    expect(params?.[11]).toBe(25);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["file_too_large", "text_extraction_skipped", "text_missing"]));
+  });
+
+  it("does not download or write file news_items for unauthorized LINE user", async () => {
+    const database = new FakeDb();
+    const downloads: string[] = [];
+    const replies: string[] = [];
+    await processLineEvent(fileEvent("file-unauthorized", "event-file-unauthorized", "note.txt"), {
+      database,
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U999"] },
+      downloadContent: async () => {
+        downloads.push("called");
+        return { body: Buffer.from("text"), mimeType: "text/plain", fileName: "note.txt" };
+      },
+      replyText: async (_token, text) => {
+        replies.push(text);
+        return {};
+      }
+    });
+    expect(downloads).toHaveLength(0);
+    expect(database.queries.some((query) => query.sql.includes("insert into news_items"))).toBe(false);
+    expect(replies).toEqual(["unauthorized"]);
   });
 
   it("handles unsend event", async () => {
@@ -326,6 +587,76 @@ function textEvent(text: string, eventId: string): LineWebhookEvent {
     timestamp: Date.parse("2026-05-24T01:00:00Z"),
     source: { type: "user", userId: "U123" },
     message: { id: `m-${eventId}`, type: "text", text }
+  };
+}
+
+function imageEvent(messageId: string, eventId: string): LineWebhookEvent {
+  return {
+    webhookEventId: eventId,
+    type: "message",
+    replyToken: "reply-token",
+    timestamp: Date.parse("2026-05-24T01:00:00Z"),
+    source: { type: "user", userId: "U123" },
+    message: { id: messageId, type: "image" }
+  };
+}
+
+function fileEvent(messageId: string, eventId: string, fileName: string): LineWebhookEvent {
+  return {
+    webhookEventId: eventId,
+    type: "message",
+    replyToken: "reply-token",
+    timestamp: Date.parse("2026-05-24T01:00:00Z"),
+    source: { type: "user", userId: "U123" },
+    message: { id: messageId, type: "file", fileName }
+  };
+}
+
+function fakeStorage(bytes?: number): StorageProvider {
+  return {
+    async putObject(params) {
+      return {
+        filePath: `/tmp/${params.fileName}`,
+        sha256: "image-sha",
+        bytes: bytes ?? params.body.length,
+        mimeType: params.mimeType
+      };
+    }
+  };
+}
+
+function fakeOcrService(status: OcrStatus, text: string | null): OcrService {
+  return {
+    async recognizeImage() {
+      return {
+        status,
+        provider: "tesseract",
+        text,
+        textLength: text?.length ?? 0
+      };
+    }
+  };
+}
+
+function fakeFileTextExtractor(
+  status: FileExtractionStatus,
+  text: string | null,
+  fileType: string,
+  dataGaps: string[] = status === "success" ? ["file_extracted_text"] : ["file_only", "text_extraction_failed", "text_missing"]
+): FileTextExtractor {
+  return {
+    async extractText() {
+      return {
+        status,
+        text,
+        fileType,
+        dataGaps,
+        metadata: {
+          file_type: fileType,
+          extracted_text_length: text?.length ?? 0
+        }
+      };
+    }
   };
 }
 

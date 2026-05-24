@@ -10,7 +10,11 @@ import { downloadLineMessageContent } from "./download.js";
 import { replyLineText } from "./push.js";
 import { hashLineUserId, verifyLineSignature } from "./signature.js";
 import { handleLineCommand } from "./commands.js";
-import { buildLineImageNewsItem, parseLineManualNewsText, upsertLineManualNewsItem } from "./manual-news.js";
+import { buildLineFileNewsItemFromExtraction, buildLineImageNewsItemFromOcr, parseLineManualNewsText, upsertLineManualNewsItem } from "./manual-news.js";
+import type { OcrConfig, OcrService, OcrStatus } from "./ocr-service.js";
+import { resolveOcrConfig, TesseractCliOcrService } from "./ocr-service.js";
+import type { FileIngestConfig, FileTextExtractor } from "./file-text-extractor.js";
+import { DefaultFileTextExtractor, detectFileType, resolveFileIngestConfig } from "./file-text-extractor.js";
 
 type ManualNewsAuth = {
   allowedUserIds?: string[];
@@ -51,6 +55,10 @@ export type LineWebhookDeps = {
   replyText?: typeof replyLineText;
   seen?: Set<string>;
   manualNewsAuth?: ManualNewsAuth;
+  ocrConfig?: Partial<OcrConfig>;
+  ocrService?: OcrService;
+  fileIngestConfig?: Partial<FileIngestConfig>;
+  fileTextExtractor?: FileTextExtractor;
 };
 
 const defaultSeen = new Set<string>();
@@ -166,6 +174,18 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
   }
 
   if (event.message.type === "image") {
+    if (!isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
+      logger.warn("unauthorized LINE image ingestion", {
+        has_line_user_id: Boolean(event.source?.userId),
+        user_hash: base.user_hash
+      });
+      await replyText(event.replyToken, "unauthorized");
+      return;
+    }
+
+    const collectedAt = event.timestamp ? new Date(event.timestamp) : new Date();
+    const ocrConfig = resolveOcrConfig(deps.ocrConfig);
+    const ocrService = deps.ocrService ?? new TesseractCliOcrService(ocrConfig);
     let fileRow: Record<string, unknown> = {};
     try {
       const downloaded = await downloadContent(event.message.id);
@@ -181,33 +201,155 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         file_path: stored.filePath,
         content_sha256: stored.sha256
       };
+      await insertLineMessage(database, {
+        ...base,
+        ...fileRow
+      });
+
+      const imageBase = {
+        lineUserHash: base.user_hash,
+        lineUserIdForHash: event.source?.userId,
+        messageId: event.message.id,
+        imageHash: stored.sha256,
+        imageSizeBytes: stored.bytes,
+        ocrProvider: ocrConfig.provider,
+        ocrEnabled: ocrConfig.enabled,
+        collectedAt,
+        mimeType: stored.mimeType,
+        filePath: stored.filePath
+      };
+
+      if (!ocrConfig.enabled) {
+        await upsertLineManualNewsItem(database, buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "disabled" }));
+        await replyText(event.replyToken, imageOcrReply("disabled"));
+        return;
+      }
+
+      if (stored.bytes > ocrConfig.maxImageBytes) {
+        await upsertLineManualNewsItem(database, buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "too_large" }));
+        await replyText(event.replyToken, imageOcrReply("too_large"));
+        return;
+      }
+
+      let ocrStatus: OcrStatus = "failed";
+      let ocrText: string | null = null;
+      try {
+        const result = await ocrService.recognizeImage({ imagePath: stored.filePath, imageBytes: stored.bytes });
+        ocrStatus = result.status;
+        ocrText = result.text;
+      } catch (error) {
+        logger.warn("LINE image OCR failed", { error: String(error), messageId: event.message.id });
+        ocrStatus = "error";
+      }
+      await upsertLineManualNewsItem(
+        database,
+        buildLineImageNewsItemFromOcr({
+          ...imageBase,
+          ocrStatus,
+          ocrText
+        })
+      );
+      await replyText(event.replyToken, imageOcrReply(ocrStatus));
+      return;
     } catch (error) {
       logger.warn("LINE image download failed; preserving message id only", { error: String(error), messageId: event.message.id });
+      await insertLineMessage(database, {
+        ...base,
+        ...fileRow
+      });
+      await upsertLineManualNewsItem(
+        database,
+        buildLineImageNewsItemFromOcr({
+          lineUserHash: base.user_hash,
+          lineUserIdForHash: event.source?.userId,
+          messageId: event.message.id,
+          ocrProvider: ocrConfig.provider,
+          ocrEnabled: ocrConfig.enabled,
+          ocrStatus: "failed",
+          collectedAt
+        })
+      );
+      await replyText(event.replyToken, imageOcrReply("failed"));
+      return;
     }
-    await insertLineMessage(database, {
-      ...base,
-      ...fileRow
-    });
-    await upsertLineManualNewsItem(database, buildLineImageNewsItem(event.message.id, event.timestamp ? new Date(event.timestamp) : new Date()));
-    await replyText(event.replyToken, "已收到圖片，但目前尚未 OCR，請補文字摘要或原始連結。");
-    return;
   }
 
   if (event.message.type === "file") {
-    const downloaded = await downloadContent(event.message.id);
-    const stored = await storage.putObject({
-      namespace: "line",
-      fileName: event.message.fileName ?? downloaded.fileName,
-      body: downloaded.body,
-      mimeType: downloaded.mimeType
-    });
-    await insertLineMessage(database, {
-      ...base,
-      file_name: event.message.fileName ?? downloaded.fileName,
-      mime_type: downloaded.mimeType,
-      file_path: stored.filePath,
-      content_sha256: stored.sha256
-    });
+    if (!isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
+      logger.warn("unauthorized LINE file ingestion", {
+        has_line_user_id: Boolean(event.source?.userId),
+        user_hash: base.user_hash
+      });
+      await replyText(event.replyToken, "unauthorized");
+      return;
+    }
+
+    const collectedAt = event.timestamp ? new Date(event.timestamp) : new Date();
+    const fileIngestConfig = resolveFileIngestConfig(deps.fileIngestConfig);
+    const fileTextExtractor = deps.fileTextExtractor ?? new DefaultFileTextExtractor(fileIngestConfig);
+    try {
+      const downloaded = await downloadContent(event.message.id);
+      const fileName = event.message.fileName ?? downloaded.fileName;
+      const stored = await storage.putObject({
+        namespace: "line",
+        fileName,
+        body: downloaded.body,
+        mimeType: downloaded.mimeType
+      });
+      await insertLineMessage(database, {
+        ...base,
+        file_name: fileName,
+        mime_type: downloaded.mimeType,
+        file_path: stored.filePath,
+        content_sha256: stored.sha256
+      });
+
+      const extraction = await fileTextExtractor.extractText({
+        body: downloaded.body,
+        fileName,
+        mimeType: downloaded.mimeType
+      });
+      await upsertLineManualNewsItem(
+        database,
+        buildLineFileNewsItemFromExtraction({
+          lineUserHash: base.user_hash,
+          lineUserIdForHash: event.source?.userId,
+          messageId: event.message.id,
+          fileName,
+          fileHash: stored.sha256,
+          fileSizeBytes: stored.bytes,
+          fileType: extraction.fileType,
+          mimeType: stored.mimeType,
+          filePath: stored.filePath,
+          extractionStatus: extraction.status,
+          extractedText: extraction.text,
+          extractionDataGaps: extraction.dataGaps,
+          extractionMetadata: extraction.metadata,
+          collectedAt
+        })
+      );
+      await replyText(event.replyToken, fileExtractionReply(extraction.status));
+      return;
+    } catch (error) {
+      logger.warn("LINE file download or text extraction failed", { error: String(error), messageId: event.message.id });
+      await insertLineMessage(database, base);
+      await upsertLineManualNewsItem(
+        database,
+        buildLineFileNewsItemFromExtraction({
+          lineUserHash: base.user_hash,
+          lineUserIdForHash: event.source?.userId,
+          messageId: event.message.id,
+          fileName: event.message.fileName ?? "LINE file message",
+          fileType: detectFileType(event.message.fileName ?? ""),
+          extractionStatus: "error",
+          extractionDataGaps: ["file_only", "text_extraction_failed", "text_missing"],
+          extractionMetadata: { error: String(error).slice(0, 240) },
+          collectedAt
+        })
+      );
+      await replyText(event.replyToken, fileExtractionReply("error"));
+      return;
+    }
   }
 }
 
@@ -264,4 +406,24 @@ function isAuthorizedManualNewsUser(lineUserId?: string, userHash?: string, auth
     (lineUserId && allowedUserIds.includes(lineUserId)) ||
     (userHash && allowedUserHashes.includes(userHash))
   );
+}
+
+function imageOcrReply(status: OcrStatus): string {
+  if (status === "success") {
+    return "已收到圖片並完成 OCR，已收錄到今日 manual news，可由 /gpt/news/today/summary 讀取。";
+  }
+  if (status === "disabled") {
+    return "已收到圖片，但目前 OCR 未啟用。請補 /news 文字摘要或原始連結。";
+  }
+  if (status === "too_large") {
+    return "已收到圖片，但圖片過大，已略過 OCR。請補 /news 文字摘要或原始連結。";
+  }
+  return "已收到圖片，但 OCR 未取得有效文字。請補 /news 文字摘要或原始連結。";
+}
+
+function fileExtractionReply(status: "success" | "empty" | "unsupported" | "too_large" | "disabled" | "error"): string {
+  if (status === "success") {
+    return "已收到檔案並讀取文字，已收錄到今日 manual news。";
+  }
+  return "已收到檔案，但目前未讀取到有效文字。請補 /news 文字摘要或改傳可選取文字的 PDF / TXT。";
 }

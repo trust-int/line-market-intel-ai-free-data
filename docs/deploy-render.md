@@ -20,6 +20,10 @@ Copy every key from `.env.production.example` into Render Environment settings. 
 
 If a corporate CA is required, set `NODE_EXTRA_CA_CERTS` and mount/provide the PEM file.
 
+LINE image OCR is optional. Render's Node runtime may not include `tesseract`; keep `OCR_ENABLED=false` unless you have confirmed the binary and language packs are installed. With `OCR_ENABLED=false`, image records are still stored with `ocr_not_available` gaps and GPT will not guess image content.
+
+LINE file text ingestion is enabled by default through `FILE_INGEST_ENABLED=true`. The MVP supports selectable-text PDFs and UTF-8 `txt`/`md`/`csv`/`json` files. `docx` and `xlsx` are safely marked `file_type_not_supported` in this first version unless parser dependencies are added later.
+
 ## Render Setup
 
 1. Create a Web Service from the repository.
@@ -77,6 +81,10 @@ Then send:
 
 Check DB `line_messages` and private storage metadata.
 
+If OCR is enabled and tesseract is available, the image should also appear in `/gpt/news/today/summary` with `source=line_image_ocr`. If OCR is disabled or fails, it should appear as `source=line_image_manual` with `image_only`/`text_missing` data gaps.
+
+For files, a readable PDF or text file should appear in `/gpt/news/today/summary` with `source=line_file_text`. Unsupported or unreadable files should still appear as `source=line_file_manual` with `file_only`/`text_missing` data gaps.
+
 ## Report Verification
 
 Check:
@@ -100,3 +108,5 @@ Also confirm Custom GPT can call `/gpt/reports/today` with Bearer auth.
 - `tls_error`: confirm Render image has CA certificates; use `NODE_EXTRA_CA_CERTS` for custom CA.
 - `GPT Action 401`: update Custom GPT Bearer token.
 - `push target missing`: keep `ENABLE_LINE_PUSH=false` until `LINE_PUSH_TARGET_ID` is known.
+- `OCR provider missing`: install tesseract in the runtime or set `OCR_ENABLED=false`.
+- `file_type_not_supported`: send selectable-text PDF, TXT, MD, CSV, or JSON, or add a parser for that Office format later.

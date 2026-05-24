@@ -90,7 +90,7 @@ export async function handleLineCommand(
           where collected_at >= $1::timestamptz
             and collected_at < $2::timestamptz
             and coalesce(status, 'active') = 'active'
-            and source in ('line_manual', 'line_manual_pack', 'line_image_manual')
+            and source in ('line_manual', 'line_manual_pack', 'line_image_manual', 'line_image_ocr', 'line_file_text', 'line_file_manual')
           order by collected_at desc
           limit 20`,
         [newsWindow.start, newsWindow.end]
@@ -231,7 +231,7 @@ async function archiveTodayManualNews(database: Queryable, reason: string, ticke
       where collected_at >= $1::timestamptz
         and collected_at < $2::timestamptz
         and coalesce(status, 'active') = 'active'
-        and source in ('line_manual', 'line_manual_pack', 'line_image_manual')
+        and source in ('line_manual', 'line_manual_pack', 'line_image_manual', 'line_image_ocr', 'line_file_text', 'line_file_manual')
         ${tickerFilter}`,
     ticker ? [newsWindow.start, newsWindow.end, ticker, reason] : [newsWindow.start, newsWindow.end, reason]
   );

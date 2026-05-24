@@ -341,6 +341,7 @@ create table if not exists news_items (
   data_gaps jsonb default '[]'::jsonb,
   interpretation_limit text,
   collected_at timestamptz default now(),
+  metadata jsonb default '{}'::jsonb,
   status text default 'active',
   archived_at timestamptz,
   archived_reason text,
@@ -350,6 +351,7 @@ create table if not exists news_items (
 alter table if exists news_items add column if not exists status text default 'active';
 alter table if exists news_items add column if not exists archived_at timestamptz;
 alter table if exists news_items add column if not exists archived_reason text;
+alter table if exists news_items add column if not exists metadata jsonb default '{}'::jsonb;
 update news_items set status = 'active' where status is null;
 
 create index if not exists idx_news_items_collected_at on news_items(collected_at desc);

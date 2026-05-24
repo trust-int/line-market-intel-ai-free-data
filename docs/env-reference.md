@@ -34,6 +34,15 @@ cp .env.production.example .env
 | `LINE_PUSH_TARGET_ID` | empty | groupId/userId target for report push. |
 | `LINE_TEST_TARGET_ID` | empty | target for `line:send-test-reply`. |
 | `NODE_EXTRA_CA_CERTS` | empty | PEM file for corporate/self-signed CA chains. |
+| `OCR_ENABLED=false` | false | Enables LINE image OCR ingestion. Keep false unless tesseract CLI is installed. |
+| `OCR_PROVIDER=tesseract` | tesseract | MVP supports local tesseract CLI only; no paid/cloud OCR by default. |
+| `OCR_LANG=chi_tra+eng` | chi_tra+eng | Tesseract language pack list. |
+| `OCR_MIN_TEXT_LENGTH=10` | 10 | Text shorter than this is treated as OCR failed. |
+| `OCR_MAX_IMAGE_BYTES=5242880` | 5242880 | Images above this size skip OCR and remain image metadata only. |
+| `FILE_INGEST_ENABLED=true` | true | Enables LINE file text extraction for PDF/text-like files. |
+| `FILE_MAX_BYTES=10485760` | 10485760 | Files above this size skip extraction and remain metadata only. |
+| `FILE_TEXT_MAX_CHARS=12000` | 12000 | Max extracted text stored in summary fields. |
+| `FILE_FULL_TEXT_MAX_CHARS=50000` | 50000 | Max extracted text stored in full text fields. |
 | `MAX_OPENAI_DAILY_COST_USD=1.00` | 1.00 | Used only when `AI_MODE=openai`. |
 | `MAX_OPENAI_DAILY_REQUESTS=300` | 300 | Used only when `AI_MODE=openai`. |
 
@@ -49,6 +58,7 @@ cp .env.production.example .env
 - `ENABLE_FUTU=false`; do not enable unless free permission is already confirmed.
 - No automatic order placement exists.
 - Reports must not output `win_rate` unless backtest `sample_size >= 30`.
+- `OCR_ENABLED=false` is the safe default; image metadata is preserved and GPT sees `data_gaps` instead of guessed content.
 
 ## Deployment Checklist Using This Env
 

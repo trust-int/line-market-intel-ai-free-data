@@ -122,6 +122,10 @@ USER_HASH_SECRET=請換成長隨機字串
 
 Webhook 會驗證 `X-Line-Signature`。圖片與檔案會立刻下載到 private storage，資料庫只保存 metadata 與 private path。
 
+圖片 OCR 預設關閉。若 `OCR_ENABLED=false`，圖片會以 `line_image_manual` 寫入 `news_items`，標示 `image_only`、`ocr_not_available`、`text_missing`，並要求補 `/news` 文字摘要或原始連結。若開啟 OCR 且環境有 tesseract CLI，圖片文字會以 `line_image_ocr` 寫入今日 manual news，供 `/gpt/news/today/summary` 讀取。
+
+LINE 檔案文字抽取預設開啟。PDF 會先嘗試抽可選取文字；`txt`、`md`、`csv`、`json` 會直接以 UTF-8 讀取。抽取成功時會以 `line_file_text` 寫入 `news_items`，摘要可由 `/gpt/news/today/summary` 讀取；抽不到文字、檔案過大或格式不支援時，會以 `line_file_manual` 保存 metadata 與 `data_gaps`，避免 GPT 誤判檔案內容。`docx`、`xlsx` 第一版先安全標示 `file_type_not_supported`，後續可再加套件解析。
+
 MVP 指令：
 
 - `/盤前`
@@ -140,6 +144,32 @@ MVP 指令：
 - `/成本`
 
 `/gpt/news/today/summary` 以台北時間 15:30 作為每日切換點，只讀目前盤後資料日、`status=active` 的 `news_items`，並排除測試來源與明顯的 API 錯誤回覆。清空與刪除指令只做封存，不會硬刪資料，方便之後追查。
+
+### LINE Image OCR / File Text Ingestion MVP
+
+```env
+OCR_ENABLED=false
+OCR_PROVIDER=tesseract
+OCR_LANG=chi_tra+eng
+OCR_MIN_TEXT_LENGTH=10
+OCR_MAX_IMAGE_BYTES=5242880
+FILE_INGEST_ENABLED=true
+FILE_MAX_BYTES=10485760
+FILE_TEXT_MAX_CHARS=12000
+FILE_FULL_TEXT_MAX_CHARS=50000
+```
+
+- `OCR_ENABLED` 未設定時預設 `false`。
+- `OCR_PROVIDER` MVP 只支援 `tesseract`，使用本機 `tesseract` CLI，不接付費雲端 OCR。
+- `OCR_MAX_IMAGE_BYTES` 預設 5 MB，超過會跳過 OCR，寫入 `image_too_large/ocr_skipped/text_missing`。
+- OCR 成功時，系統會抽出台股 4 位數代號與常見題材，例如 AI伺服器、PCB、散熱、記憶體、半導體封測、機器人、軍工。
+- OCR 失敗、未啟用或環境缺 tesseract 時，不會讓 webhook crash，也不會臆測圖片內容；GPT 只能看到 `data_gaps`。
+- `FILE_INGEST_ENABLED=false` 時，檔案只保存 metadata，不抽文字。
+- `FILE_MAX_BYTES` 預設 10 MB，超過會略過抽文並標示 `file_too_large/text_missing`。
+- `FILE_TEXT_MAX_CHARS` 控制 summary 文字上限，避免 GPT summary payload 過大。
+- `FILE_FULL_TEXT_MAX_CHARS` 控制 DB 保存的 full text 上限；summary endpoint 只回短預覽與 `has_full_text/full_text_chars`。
+
+Render Node runtime 不一定內建 tesseract。若沒有安裝 tesseract，請先維持 `OCR_ENABLED=false`；若改用 Docker 或自管 Ubuntu，需安裝 `tesseract-ocr` 與繁中語言包後再設 `OCR_ENABLED=true`。
 
 ## Supabase / PostgreSQL
 
@@ -172,7 +202,7 @@ MVP 指令：
 DATABASE_URL=postgresql://...
 ADMIN_TOKEN=內部 ingest 用長隨機字串
 GPT_ACTION_BEARER_TOKEN=Custom GPT Action Bearer token
-NEWS_INGEST_ALLOWED_SOURCES=manual_test,manual_admin,line_manual,line_manual_pack,line_image_manual,jin10,wallstreetcn,futu-news,twse_public,tpex_public,mops_public,rss_public
+NEWS_INGEST_ALLOWED_SOURCES=manual_test,manual_admin,line_manual,line_manual_pack,line_image_manual,line_image_ocr,line_file_text,line_file_manual,jin10,wallstreetcn,futu-news,twse_public,tpex_public,mops_public,rss_public
 ```
 
 執行 migration：

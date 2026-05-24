@@ -31,7 +31,12 @@ function extensionFromMime(mimeType?: string): string {
   if (!mimeType) return ".bin";
   if (mimeType.includes("jpeg")) return ".jpg";
   if (mimeType.includes("png")) return ".png";
+  if (mimeType.includes("webp")) return ".webp";
   if (mimeType.includes("pdf")) return ".pdf";
+  if (mimeType.includes("csv")) return ".csv";
+  if (mimeType.includes("json")) return ".json";
+  if (mimeType.includes("wordprocessingml")) return ".docx";
+  if (mimeType.includes("spreadsheetml")) return ".xlsx";
   if (mimeType.includes("plain")) return ".txt";
   return ".bin";
 }
