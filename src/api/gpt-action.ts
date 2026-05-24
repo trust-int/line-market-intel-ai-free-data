@@ -4,7 +4,8 @@ import path from "node:path";
 import type { TickerCandidate } from "../analysis/ticker-candidate-engine.js";
 import { config } from "../config.js";
 import { db, type Queryable } from "../db/client.js";
-import { manualNewsWindowTaipei, todayTaipei } from "../utils/date.js";
+import { getTaipeiDateString, manualNewsWindowTaipei, todayTaipei } from "../utils/date.js";
+import { logger } from "../utils/logger.js";
 import { requireGptActionAuth } from "./auth.js";
 
 type AnyRecord = Record<string, unknown>;
@@ -152,7 +153,7 @@ export function createGptActionRouter(database: Queryable = db) {
 
   router.get("/news/today/summary", async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit ?? 20), 1), 50);
-    const newsWindow = manualNewsWindowTaipei();
+    const taipeiToday = getTaipeiDateString();
     try {
       const newsRows = await database.query(
         `select id, source, source_url, title, summary, full_text,
@@ -166,12 +167,13 @@ export function createGptActionRouter(database: Queryable = db) {
                 data_gaps,
                 interpretation_limit,
                 interpretation_limit as license_status,
+                market_date::text as market_date,
                 collected_at as published_at,
                 collected_at as fetched_at,
                 collected_at
          from news_items
-         where collected_at >= $2::timestamptz
-           and collected_at < $3::timestamptz
+         where market_date = $2::date
+           and coalesce(archived, false) = false
            and coalesce(status, 'active') = 'active'
            and source <> 'manual_test'
            and not (
@@ -188,13 +190,18 @@ export function createGptActionRouter(database: Queryable = db) {
          order by case importance when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end,
                   collected_at desc
          limit $1`,
-        [limit, newsWindow.start, newsWindow.end]
+        [limit, taipeiToday]
       );
       const items = newsRows.rows.slice(0, limit).map((row) => summarizeNewsRow(row as AnyRecord));
+      logger.info("gpt_news_summary_ok", {
+        path: req.originalUrl,
+        limit,
+        marketDate: taipeiToday,
+        rowCount: items.length
+      });
       res.json({
         status: items.length ? "ok" : "empty",
-        date: newsWindow.date,
-        manual_news_window: newsWindow,
+        date: taipeiToday,
         limit,
         items,
         line_manual_news: items,
@@ -202,24 +209,30 @@ export function createGptActionRouter(database: Queryable = db) {
         empty_reason: items.length ? undefined : "no_news_items_or_line_manual_news",
         data_gaps: items.length ? [] : ["news_empty"]
       });
-    } catch {
-      res.json({ status: "empty", date: newsWindow.date, manual_news_window: newsWindow, limit, items: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
+    } catch (error) {
+      logger.error("gpt_news_summary_failed", {
+        path: req.originalUrl,
+        limit,
+        marketDate: taipeiToday,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      res.json({ status: "empty", date: taipeiToday, limit, items: [], line_manual_news: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
     }
   });
 
   router.get("/news/:id/full-text", async (req, res) => {
-    const newsWindow = manualNewsWindowTaipei();
+    const taipeiToday = getTaipeiDateString();
     const maxChars = Math.min(Math.max(Number(req.query.max_chars ?? config.fileFullTextMaxChars), 1), config.fileFullTextMaxChars);
     try {
       const rows = await database.query<AnyRecord>(
         `select id, source, title, summary, full_text, interpretation_limit, data_quality_score, data_gaps, collected_at
            from news_items
           where id = $1
-            and collected_at >= $2::timestamptz
-            and collected_at < $3::timestamptz
+            and market_date = $2::date
+            and coalesce(archived, false) = false
             and coalesce(status, 'active') = 'active'
           limit 1`,
-        [req.params.id, newsWindow.start, newsWindow.end]
+        [req.params.id, taipeiToday]
       );
       const row = rows.rows[0];
       if (!row) {
@@ -247,6 +260,7 @@ export function createGptActionRouter(database: Queryable = db) {
 
   router.get("/news/today", async (_req, res) => {
     const newsWindow = manualNewsWindowTaipei();
+    const taipeiToday = getTaipeiDateString();
     try {
       const [newsRows, newsItemRows] = await Promise.all([
         database.query(
@@ -260,13 +274,13 @@ export function createGptActionRouter(database: Queryable = db) {
                   collected_at as fetched_at,
                   interpretation_limit as license_status
              from news_items
-            where collected_at >= $1::timestamptz
-              and collected_at < $2::timestamptz
+            where market_date = $3::date
+              and coalesce(archived, false) = false
               and coalesce(status, 'active') = 'active'
               and source <> 'manual_test'
             order by collected_at desc
             limit 50`,
-          [newsWindow.start, newsWindow.end]
+          [newsWindow.start, newsWindow.end, taipeiToday]
         )
       ]);
       res.json({ date: newsWindow.date, manual_news_window: newsWindow, rows: [...newsRows.rows, ...newsItemRows.rows], line_manual_rows: newsItemRows.rows.length });
@@ -956,6 +970,7 @@ function summarizeNewsRow(row: AnyRecord) {
     data_quality_score: getNumber(row, "data_quality_score") ?? (summary ? 70 : 45),
     data_gaps: dataGaps.length ? dataGaps : summary ? ["article_body_omitted"] : ["summary_missing", "article_body_omitted"],
     collected_at: row.collected_at ?? row.fetched_at,
+    market_date: getString(row, "market_date") ?? undefined,
     published_at: row.published_at,
     fetched_at: row.fetched_at,
     license_status: getString(row, "license_status")

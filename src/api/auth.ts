@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { config } from "../config.js";
+import { logger } from "../utils/logger.js";
 
 export function requireGptActionAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractGptActionToken(req);
@@ -8,6 +9,15 @@ export function requireGptActionAuth(req: Request, res: Response, next: NextFunc
     acceptedTokens.push("change-me-too");
   }
   if (!token || !acceptedTokens.includes(token)) {
+    logger.warn("gpt_action_auth_failed", {
+      path: req.originalUrl ?? req.url,
+      method: req.method,
+      hasAuthorization: Boolean(req.header("authorization")),
+      hasXApiKey: Boolean(req.header("x-api-key")),
+      hasApiKey: Boolean(req.header("api-key")),
+      normalizedTokenLength: token.length,
+      expectedTokenConfigured: Boolean(config.gptActionBearerToken)
+    });
     res.status(401).json({ error: "unauthorized" });
     return;
   }
