@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: Custom GPT Action API for personal LINE and Taiwan market intelligence. Returns user-owned summaries only.
 servers:
-  - url: https://line-market-intel-ai-free-data.onrender.com
+  - url: https://line-market-intel-ai-free-data-ocr.onrender.com
 security:
   - bearerAuth: []
 components:
