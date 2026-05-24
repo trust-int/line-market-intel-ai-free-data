@@ -24,6 +24,7 @@ cp .env.production.example .env
 | `USER_HASH_SECRET` | yes | Long random secret for HMAC user hashing. |
 | `GPT_ACTION_BEARER_TOKEN` | yes | Bearer token for Custom GPT Action. |
 | `ADMIN_TOKEN` | yes | Bearer token for internal ingest endpoints such as `/internal/ingest/news`; do not expose to GPT Actions. |
+| `NEWS_INGEST_ALLOWED_SOURCES` | yes | Comma-separated whitelist of `news_items.source` values accepted by crawler/admin ingestion. Unknown sources are rejected before DB writes. |
 
 ## Optional
 

@@ -10,6 +10,7 @@ const baseEnv: NodeJS.ProcessEnv = {
   LINE_CHANNEL_ACCESS_TOKEN: "line-access-token-long-enough",
   USER_HASH_SECRET: "user-hash-secret-long-enough",
   GPT_ACTION_BEARER_TOKEN: "gpt-action-token",
+  NEWS_INGEST_ALLOWED_SOURCES: "manual_test,line_manual,line_manual_pack",
   OFFICIAL_DATA_MODE: "auto",
   AI_MODE: "manual",
   NO_PAID_DATA_API: "true",

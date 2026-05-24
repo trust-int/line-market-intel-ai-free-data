@@ -40,6 +40,7 @@ export async function runProductionCheck(
   requireEnv(add, env, "LINE_CHANNEL_ACCESS_TOKEN", "到 LINE Messaging API channel 建立 long-lived access token。");
   requireEnv(add, env, "USER_HASH_SECRET", "設定一組長隨機字串，用於 HMAC hash LINE userId。", "change-me");
   requireEnv(add, env, "GPT_ACTION_BEARER_TOKEN", "設定 Custom GPT Action 專用 Bearer token。", "change-me-too");
+  requireEnv(add, env, "NEWS_INGEST_ALLOWED_SOURCES", "設定 crawler/admin 可寫入的 news_items.source 白名單。");
   requireEnv(add, env, "OFFICIAL_DATA_MODE", "設定 auto、live 或 fixture。");
   requireEnv(add, env, "AI_MODE", "設定 manual 或 openai。");
   requireEnv(add, env, "NO_PAID_DATA_API", "production 必須為 true。");
