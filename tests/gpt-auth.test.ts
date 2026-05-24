@@ -24,4 +24,34 @@ describe("GPT Action auth", () => {
     );
     expect(next).toHaveBeenCalled();
   });
+
+  it("accepts lowercase bearer scheme", () => {
+    const next = vi.fn();
+    requireGptActionAuth(
+      { header: () => "bearer change-me-too" } as never,
+      { status: vi.fn().mockReturnThis(), json: vi.fn() } as never,
+      next
+    );
+    expect(next).toHaveBeenCalled();
+  });
+
+  it("accepts pasted bearer prefix in the key value", () => {
+    const next = vi.fn();
+    requireGptActionAuth(
+      { header: () => "Bearer Bearer change-me-too" } as never,
+      { status: vi.fn().mockReturnThis(), json: vi.fn() } as never,
+      next
+    );
+    expect(next).toHaveBeenCalled();
+  });
+
+  it("accepts x-api-key fallback", () => {
+    const next = vi.fn();
+    requireGptActionAuth(
+      { header: (name: string) => name === "x-api-key" ? "change-me-too" : "" } as never,
+      { status: vi.fn().mockReturnThis(), json: vi.fn() } as never,
+      next
+    );
+    expect(next).toHaveBeenCalled();
+  });
 });
