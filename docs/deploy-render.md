@@ -1,6 +1,6 @@
 # Deploy On Render
 
-Render is a simple first cloud target for this service. Use a Web Service with Node 20+.
+Render is a simple first cloud target for this service. Use a Web Service with Node 20+ or Docker. Use Docker when you want LINE image OCR, because the Dockerfile installs tesseract and language packs.
 
 ## Required Environment Variables
 
@@ -20,7 +20,7 @@ Copy every key from `.env.production.example` into Render Environment settings. 
 
 If a corporate CA is required, set `NODE_EXTRA_CA_CERTS` and mount/provide the PEM file.
 
-LINE image OCR is optional. Render's Node runtime may not include `tesseract`; keep `OCR_ENABLED=false` unless you have confirmed the binary and language packs are installed. With `OCR_ENABLED=false`, image records are still stored with `ocr_not_available` gaps and GPT will not guess image content.
+LINE image OCR is optional. Render's Node runtime may not include `tesseract`; keep `OCR_ENABLED=false` for Node runtime. For OCR, switch the service runtime to Docker and set `OCR_ENABLED=true`. The project Dockerfile installs `tesseract-ocr`, `tesseract-ocr-eng`, and `tesseract-ocr-chi-tra`. With `OCR_ENABLED=false`, image records are still stored with `ocr_not_available` gaps and GPT will not guess image content.
 
 LINE file text ingestion is enabled by default through `FILE_INGEST_ENABLED=true`. The MVP supports selectable-text PDFs and UTF-8 `txt`/`md`/`csv`/`json` files. `docx` and `xlsx` are safely marked `file_type_not_supported` in this first version unless parser dependencies are added later.
 
@@ -46,6 +46,29 @@ npm start
 ```
 
 5. Add environment variables.
+
+## Render Docker Setup For OCR
+
+If you want image OCR:
+
+1. In Render service settings, change Runtime / Language to Docker, or create a new Web Service using Docker.
+2. Dockerfile path:
+
+```text
+./Dockerfile
+```
+
+3. Build command and Start command are not needed for Docker runtime; Render uses the Dockerfile.
+4. Add or update env:
+
+```env
+OCR_ENABLED=true
+OCR_PROVIDER=tesseract
+OCR_LANG=chi_tra+eng
+```
+
+5. Redeploy, then send a screenshot containing text to LINE.
+6. Confirm `/gpt/news/today/summary` returns `source=line_image_ocr` and a non-null `summary`.
 
 ## Bring-up Commands
 

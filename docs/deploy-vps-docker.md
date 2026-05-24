@@ -47,6 +47,20 @@ NODE_EXTRA_CA_CERTS=/app/certs/company-root-ca.pem
 
 Do not use `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 
+The project Dockerfile installs OCR runtime packages in the final image:
+
+- `tesseract-ocr`
+- `tesseract-ocr-eng`
+- `tesseract-ocr-chi-tra`
+
+Enable OCR with:
+
+```env
+OCR_ENABLED=true
+OCR_PROVIDER=tesseract
+OCR_LANG=chi_tra+eng
+```
+
 ## Build And Run
 
 ```bash
