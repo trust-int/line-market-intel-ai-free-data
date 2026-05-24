@@ -9,6 +9,10 @@ export function formatTaipeiDate(date = new Date()): string {
   }).format(date);
 }
 
+export function getTaipeiDateString(date = new Date()): string {
+  return formatTaipeiDate(date);
+}
+
 export function formatTaipeiDateTime(date = new Date()): string {
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: TAIPEI_TIME_ZONE,
