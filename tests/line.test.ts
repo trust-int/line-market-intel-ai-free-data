@@ -4,7 +4,7 @@ import { createGptActionRouter } from "../src/api/gpt-action.js";
 import { config } from "../src/config.js";
 import type { Queryable } from "../src/db/client.js";
 import type { FileExtractionStatus, FileTextExtractor } from "../src/line/file-text-extractor.js";
-import type { OcrService, OcrStatus } from "../src/line/ocr-service.js";
+import type { OcrErrorCode, OcrService, OcrStatus } from "../src/line/ocr-service.js";
 import { processLineEvent, type LineWebhookEvent } from "../src/line/webhook.js";
 import { hashLineUserId, verifyLineSignature } from "../src/line/signature.js";
 import type { StorageProvider } from "../src/storage/storage.js";
@@ -340,6 +340,7 @@ describe("LINE ingestion", () => {
     expect(JSON.parse(String(params?.[15]))).toMatchObject({
       user_hash: expect.any(String),
       message_id: "image-disabled",
+      line_message_id: "image-disabled",
       message_type: "image",
       image_hash: "image-sha",
       image_size_bytes: 5,
@@ -348,7 +349,49 @@ describe("LINE ingestion", () => {
       ocr_status: "disabled",
       ocr_text_length: 0
     });
+    expect(JSON.parse(String(params?.[16]))).toMatchObject({
+      line_message_type: "image",
+      line_message_id: "image-disabled",
+      image_size_bytes: 5,
+      image_hash: "image-sha",
+      ocr_enabled: false,
+      ocr_provider: "tesseract",
+      ocr_lang: "chi_tra+eng",
+      ocr_status: "disabled",
+      ocr_text_length: 0,
+      ocr_error_code: null
+    });
     expect(replies[0]).toBe("已收到圖片，但目前 OCR 未啟用。請補 /news 文字摘要或原始連結。");
+  });
+
+  it("OCR provider missing writes provider_missing into image raw_payload", async () => {
+    const database = new FakeDb();
+    await processLineEvent(imageEvent("image-provider-missing", "event-image-provider-missing"), {
+      database,
+      storage: fakeStorage(),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-provider-missing.png" }),
+      ocrConfig: { enabled: true, minTextLength: 10 },
+      ocrService: fakeOcrService("provider_missing", null, "PROVIDER_MISSING", "tesseract binary not found"),
+      replyText: async () => ({})
+    });
+
+    const params = findNewsInsert(database);
+    expect(params?.[1]).toBe("line_image_manual");
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["provider_missing", "text_missing"]));
+    expect(JSON.parse(String(params?.[16]))).toMatchObject({
+      line_message_type: "image",
+      line_message_id: "image-provider-missing",
+      image_size_bytes: 5,
+      image_hash: "image-sha",
+      ocr_enabled: true,
+      ocr_provider: "tesseract",
+      ocr_lang: "chi_tra+eng",
+      ocr_status: "provider_missing",
+      ocr_text_length: 0,
+      ocr_error_code: "PROVIDER_MISSING",
+      ocr_error_message: "tesseract binary not found"
+    });
   });
 
   it("OCR success image messages write line_image_ocr and are readable from news summary", async () => {
@@ -411,7 +454,7 @@ describe("LINE ingestion", () => {
     expect(params?.[13]).toBe("brief_ocr_text_only");
   });
 
-  it("OCR enabled but empty text writes image_manual with ocr_failed", async () => {
+  it("OCR enabled but empty text writes image_manual with ocr_empty", async () => {
     const database = new FakeDb();
     const replies: string[] = [];
     await processLineEvent(imageEvent("image-empty", "event-image-empty"), {
@@ -420,7 +463,7 @@ describe("LINE ingestion", () => {
       seen: new Set<string>(),
       downloadContent: async () => ({ body: Buffer.from("image"), mimeType: "image/png", fileName: "image-empty.png" }),
       ocrConfig: { enabled: true, minTextLength: 10 },
-      ocrService: fakeOcrService("failed", ""),
+      ocrService: fakeOcrService("empty", "", "EMPTY_TEXT", "OCR text length 0 below min 10"),
       replyText: async (_token, text) => {
         replies.push(text);
         return {};
@@ -428,8 +471,14 @@ describe("LINE ingestion", () => {
     });
     const params = findNewsInsert(database);
     expect(params?.[1]).toBe("line_image_manual");
-    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["ocr_failed", "text_missing"]));
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["ocr_empty", "text_missing"]));
     expect(params?.[13]).toBe("image_without_ocr");
+    expect(JSON.parse(String(params?.[16]))).toMatchObject({
+      ocr_status: "empty",
+      ocr_text_length: 0,
+      ocr_error_code: "EMPTY_TEXT",
+      ocr_error_message: "OCR text length 0 below min 10"
+    });
     expect(replies[0]).toBe("已收到圖片，但 OCR 未取得有效文字。請補 /news 文字摘要或原始連結。");
   });
 
@@ -774,14 +823,16 @@ function pngWithDimensions(width: number, height: number): Buffer {
   return buffer;
 }
 
-function fakeOcrService(status: OcrStatus, text: string | null): OcrService {
+function fakeOcrService(status: OcrStatus, text: string | null, errorCode?: OcrErrorCode, error?: string): OcrService {
   return {
     async recognizeImage() {
       return {
         status,
         provider: "tesseract",
         text,
-        textLength: text?.length ?? 0
+        textLength: text?.length ?? 0,
+        errorCode,
+        error
       };
     }
   };

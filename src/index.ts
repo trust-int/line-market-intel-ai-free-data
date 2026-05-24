@@ -8,7 +8,7 @@ import { createDataSourceRouter } from "./api/data-source.js";
 import { createGptActionRouter } from "./api/gpt-action.js";
 import { createHealthRouter } from "./api/health.js";
 import { createHoldingsRouter } from "./api/holdings.js";
-import { createInternalIngestRouter } from "./api/internal-ingest.js";
+import { createInternalIngestRouter, INTERNAL_DIAGNOSTICS_ROUTES } from "./api/internal-ingest.js";
 import { createReportsRouter } from "./api/reports.js";
 import { createWatchlistRouter } from "./api/watchlist.js";
 import { createLineWebhookRouter } from "./line/webhook.js";
@@ -47,7 +47,25 @@ export function createApp() {
 if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
   const app = createApp();
   app.listen(config.port, () => {
-    logger.info("server started", { port: config.port, aiMode: config.aiMode });
+    logger.info("server started", {
+      port: config.port,
+      ai_mode: config.aiMode,
+      node_env: config.nodeEnv,
+      commit_sha: getCommitSha(),
+      registered_internal_diagnostics_routes: INTERNAL_DIAGNOSTICS_ROUTES,
+      ocr_diagnostics_route_enabled: INTERNAL_DIAGNOSTICS_ROUTES.includes("GET /internal/diagnostics/ocr")
+    });
     if (config.nodeEnv !== "test") startScheduler();
   });
+}
+
+function getCommitSha(): string | null {
+  return (
+    process.env.RENDER_GIT_COMMIT ||
+    process.env.COMMIT_SHA ||
+    process.env.SOURCE_VERSION ||
+    process.env.GIT_COMMIT ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    null
+  );
 }

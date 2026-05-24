@@ -2,6 +2,7 @@ import type { Queryable } from "../db/client.js";
 import { config } from "../config.js";
 import { getTaipeiDateString } from "../utils/date.js";
 import { sha256Hex } from "../utils/hash.js";
+import type { OcrErrorCode, OcrStatus } from "./ocr-service.js";
 
 export type LineManualNewsKind = "news" | "manual";
 export const LINE_MANUAL_NEWS_PARSER_VERSION = "line_manual_v2";
@@ -38,9 +39,13 @@ export type LineImageNewsBuildParams = {
   imageHeight?: number;
   imagePixels?: number;
   ocrProvider?: string;
+  ocrLang?: string;
   ocrEnabled: boolean;
-  ocrStatus: "success" | "failed" | "disabled" | "too_large" | "provider_missing" | "error";
+  ocrStatus: OcrStatus;
   ocrText?: string | null;
+  ocrErrorCode?: OcrErrorCode | null;
+  ocrErrorMessage?: string | null;
+  tesseractFound?: boolean | null;
   collectedAt?: Date;
   mimeType?: string;
   filePath?: string;
@@ -341,36 +346,47 @@ export function normalizeText(text: string): string {
 }
 
 function buildImageMetadata(params: LineImageNewsBuildParams): Record<string, unknown> {
+  const ocrFields = buildImageOcrFields(params);
   return {
-    user_hash: params.lineUserHash,
+    user_hash: params.lineUserHash ?? null,
     message_id: params.messageId,
+    line_message_type: "image",
+    line_message_id: params.messageId,
     message_type: "image",
-    image_hash: params.imageHash,
-    image_size_bytes: params.imageSizeBytes,
-    image_width: params.imageWidth,
-    image_height: params.imageHeight,
-    image_pixels: params.imagePixels,
-    mime_type: params.mimeType,
-    file_path: params.filePath,
+    image_hash: params.imageHash ?? null,
+    image_size_bytes: params.imageSizeBytes ?? null,
+    image_width: params.imageWidth ?? null,
+    image_height: params.imageHeight ?? null,
+    image_pixels: params.imagePixels ?? null,
+    mime_type: params.mimeType ?? null,
+    file_path: params.filePath ?? null,
     ocr_provider: params.ocrProvider ?? "tesseract",
+    ocr_lang: params.ocrLang ?? null,
     ocr_enabled: params.ocrEnabled,
-    ocr_status: params.ocrStatus,
-    ocr_text_length: params.ocrText?.length ?? 0
+    tesseract_found: params.tesseractFound ?? null,
+    ...ocrFields
   };
 }
 
 function buildImageRawPayload(params: LineImageNewsBuildParams, collectedAt: Date): Record<string, unknown> {
+  const ocrFields = buildImageOcrFields(params);
   return {
     line_message_type: "image",
     line_message_id: params.messageId,
-    line_user_id_hash: params.lineUserHash,
-    image_hash: params.imageHash,
-    file_size_bytes: params.imageSizeBytes,
-    image_width: params.imageWidth,
-    image_height: params.imageHeight,
-    image_pixels: params.imagePixels,
-    mime_type: params.mimeType,
-    file_path: params.filePath,
+    line_user_id_hash: params.lineUserHash ?? null,
+    image_hash: params.imageHash ?? null,
+    image_size_bytes: params.imageSizeBytes ?? null,
+    file_size_bytes: params.imageSizeBytes ?? null,
+    image_width: params.imageWidth ?? null,
+    image_height: params.imageHeight ?? null,
+    image_pixels: params.imagePixels ?? null,
+    mime_type: params.mimeType ?? null,
+    file_path: params.filePath ?? null,
+    ocr_enabled: params.ocrEnabled,
+    ocr_provider: params.ocrProvider ?? "tesseract",
+    ocr_lang: params.ocrLang ?? null,
+    tesseract_found: params.tesseractFound ?? null,
+    ...ocrFields,
     received_at: collectedAt.toISOString(),
     parser_version: LINE_MANUAL_NEWS_PARSER_VERSION
   };
@@ -379,8 +395,39 @@ function buildImageRawPayload(params: LineImageNewsBuildParams, collectedAt: Dat
 function getImageOnlyGaps(status: LineImageNewsBuildParams["ocrStatus"]): string[] {
   if (status === "disabled") return ["image_only", "ocr_not_available", "text_missing"];
   if (status === "too_large") return ["image_only", "image_too_large", "ocr_skipped", "text_missing"];
-  if (status === "provider_missing") return ["image_only", "ocr_failed", "ocr_provider_missing", "text_missing"];
+  if (status === "provider_missing") return ["image_only", "provider_missing", "text_missing"];
+  if (status === "language_missing") return ["image_only", "ocr_language_missing", "text_missing"];
+  if (status === "empty") return ["image_only", "ocr_empty", "text_missing"];
   return ["image_only", "ocr_failed", "text_missing"];
+}
+
+function buildImageOcrFields(params: LineImageNewsBuildParams): Record<string, unknown> {
+  const errorCode = params.ocrErrorCode === undefined ? defaultOcrErrorCode(params.ocrStatus) : params.ocrErrorCode;
+  const errorMessage = params.ocrErrorMessage === undefined ? defaultOcrErrorMessage(params.ocrStatus) : params.ocrErrorMessage;
+  return {
+    ocr_status: params.ocrStatus,
+    ocr_text_length: params.ocrText?.length ?? 0,
+    ocr_error_code: errorCode,
+    ocr_error_message: typeof errorMessage === "string" ? errorMessage.slice(0, 300) : errorMessage
+  };
+}
+
+function defaultOcrErrorCode(status: OcrStatus): OcrErrorCode | null {
+  if (status === "provider_missing") return "PROVIDER_MISSING";
+  if (status === "language_missing") return "LANG_MISSING";
+  if (status === "too_large") return "TOO_LARGE";
+  if (status === "empty") return "EMPTY_TEXT";
+  if (status === "failed") return "EXEC_ERROR";
+  return null;
+}
+
+function defaultOcrErrorMessage(status: OcrStatus): string | null {
+  if (status === "provider_missing") return "tesseract binary not found";
+  if (status === "language_missing") return "requested OCR language package is missing";
+  if (status === "too_large") return "image exceeds OCR size limits";
+  if (status === "empty") return "OCR returned no text or text below minimum length";
+  if (status === "failed") return "OCR execution failed";
+  return null;
 }
 
 function buildFileMetadata(params: LineFileNewsBuildParams): Record<string, unknown> {

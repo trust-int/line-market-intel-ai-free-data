@@ -91,6 +91,92 @@ describe("GPT MVP endpoints", () => {
     }
   });
 
+  it("/internal/diagnostics/ocr rejects requests without ADMIN_TOKEN", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/diagnostics/ocr`);
+      expect(response.status).toBe(401);
+    } finally {
+      close();
+    }
+  });
+
+  it("/internal/diagnostics/ping rejects requests without ADMIN_TOKEN", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/diagnostics/ping`);
+      expect(response.status).toBe(401);
+    } finally {
+      close();
+    }
+  });
+
+  it("/internal/diagnostics/ping returns ok from production createApp with ADMIN_TOKEN", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/diagnostics/ping`, {
+        headers: { Authorization: "Bearer admin-test-token" }
+      });
+      const body = await response.json() as {
+        status: string;
+        service: string;
+        internal_routes_enabled: boolean;
+        timestamp: string;
+      };
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        status: "ok",
+        service: "line-market-intel-ai-free-data",
+        internal_routes_enabled: true
+      });
+      expect(body.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    } finally {
+      close();
+    }
+  });
+
+  it("/internal/diagnostics/ocr returns env runtime and tesseract diagnostics with ADMIN_TOKEN", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/diagnostics/ocr`, {
+        headers: { Authorization: "Bearer admin-test-token" }
+      });
+      const body = await response.json() as {
+        status: string;
+        env?: Record<string, unknown>;
+        runtime?: Record<string, unknown>;
+        tesseract?: Record<string, unknown>;
+      };
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("ok");
+      expect(body.env).toMatchObject({
+        OCR_PROVIDER: "tesseract",
+        OCR_LANG: expect.any(String),
+        OCR_MIN_TEXT_LENGTH: expect.any(Number),
+        OCR_MAX_IMAGE_BYTES: expect.any(Number)
+      });
+      expect(typeof body.env?.OCR_ENABLED).toBe("boolean");
+      expect(body.runtime).toMatchObject({
+        platform: expect.any(String),
+        node_version: expect.any(String),
+        cwd: expect.any(String),
+        tmpdir: expect.any(String)
+      });
+      expect(body.tesseract).toHaveProperty("which");
+      expect(body.tesseract).toHaveProperty("version");
+      expect(Array.isArray(body.tesseract?.list_langs)).toBe(true);
+      expect(typeof body.tesseract?.has_eng).toBe("boolean");
+      expect(typeof body.tesseract?.has_chi_tra).toBe("boolean");
+      expect(body.tesseract).toHaveProperty("error");
+    } finally {
+      close();
+    }
+  });
+
   it("/internal/ingest/news upserts news_items with ADMIN_TOKEN", async () => {
     process.env.ADMIN_TOKEN = "admin-test-token";
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
@@ -219,10 +305,9 @@ describe("GPT MVP endpoints", () => {
       expect(response.status).toBe(200);
       expect(body.status).toBe("empty");
       expect(newsQuery?.params?.[0]).toBe(50);
-      expect(newsQuery?.params?.[1]).toMatch(/^\d{4}-\d{2}-\d{2}T15:30:00\+08:00$/);
-      expect(newsQuery?.params?.[2]).toMatch(/^\d{4}-\d{2}-\d{2}T15:30:00\+08:00$/);
-      expect(newsQuery?.sql).toContain("collected_at >= $2::timestamptz");
-      expect(newsQuery?.sql).toContain("collected_at < $3::timestamptz");
+      expect(newsQuery?.params?.[1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(newsQuery?.sql).toContain("market_date = $2::date");
+      expect(newsQuery?.sql).toContain("coalesce(archived, false) = false");
       expect(newsQuery?.sql).toContain("coalesce(status, 'active') = 'active'");
       expect(newsQuery?.sql).toContain("source <> 'manual_test'");
     } finally {
@@ -250,6 +335,7 @@ describe("GPT MVP endpoints", () => {
             data_gaps: ["full_text_missing"],
             interpretation_limit: "title_or_summary_only",
             license_status: "title_or_summary_only",
+            market_date: "2026-05-24",
             collected_at: "2026-05-24T01:00:00.000Z",
             published_at: "2026-05-24T01:00:00.000Z",
             fetched_at: "2026-05-24T01:00:00.000Z"
@@ -274,6 +360,8 @@ describe("GPT MVP endpoints", () => {
           interpretation_limit: string;
           data_gaps: string[];
           collected_at: string;
+          market_date?: string;
+          raw_payload?: unknown;
         }>;
       };
       expect(response.status).toBe(200);
@@ -286,6 +374,8 @@ describe("GPT MVP endpoints", () => {
       expect(body.line_manual_news[0]?.interpretation_limit).toBe("title_or_summary_only");
       expect(body.line_manual_news[0]?.data_gaps).toEqual(["full_text_missing"]);
       expect(body.line_manual_news[0]?.collected_at).toBe("2026-05-24T01:00:00.000Z");
+      expect(body.line_manual_news[0]?.market_date).toBe("2026-05-24");
+      expect(body.line_manual_news[0]?.raw_payload).toBeUndefined();
     } finally {
       close();
     }

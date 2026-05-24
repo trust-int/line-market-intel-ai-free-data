@@ -12,8 +12,9 @@ import { hashLineUserId, verifyLineSignature } from "./signature.js";
 import { handleLineCommand } from "./commands.js";
 import { detectImageDimensions } from "./image-dimensions.js";
 import { buildLineFileNewsItemFromExtraction, buildLineImageNewsItemFromOcr, parseLineManualNewsText, upsertLineManualNewsItem } from "./manual-news.js";
-import type { OcrConfig, OcrService, OcrStatus } from "./ocr-service.js";
+import type { OcrConfig, OcrErrorCode, OcrService, OcrStatus } from "./ocr-service.js";
 import { resolveOcrConfig, TesseractCliOcrService } from "./ocr-service.js";
+import { safeOcrErrorSummary } from "./ocr-service.js";
 import type { FileIngestConfig, FileTextExtractor } from "./file-text-extractor.js";
 import { DefaultFileTextExtractor, detectFileType, resolveFileIngestConfig } from "./file-text-extractor.js";
 
@@ -180,17 +181,28 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
   }
 
   if (event.message.type === "image") {
+    const ocrConfig = resolveOcrConfig(deps.ocrConfig);
     if (!isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
       logger.warn("unauthorized LINE image ingestion", {
         has_line_user_id: Boolean(event.source?.userId),
         user_hash: base.user_hash
+      });
+      logLineImageOcr("warn", {
+        lineUserAuthorized: false,
+        messageId: event.message.id,
+        downloadStatus: "skipped",
+        ocrEnabled: ocrConfig.enabled,
+        tesseractFound: null,
+        ocrLang: ocrConfig.lang,
+        ocrStatus: "skipped_unauthorized",
+        ocrTextLength: 0,
+        dataGaps: ["unauthorized"]
       });
       await replyText(event.replyToken, "unauthorized");
       return;
     }
 
     const collectedAt = event.timestamp ? new Date(event.timestamp) : new Date();
-    const ocrConfig = resolveOcrConfig(deps.ocrConfig);
     const ocrService = deps.ocrService ?? new TesseractCliOcrService(ocrConfig);
     let fileRow: Record<string, unknown> = {};
     try {
@@ -223,6 +235,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         imageHeight: imageDimensions?.height,
         imagePixels: imageDimensions?.pixels,
         ocrProvider: ocrConfig.provider,
+        ocrLang: ocrConfig.lang,
         ocrEnabled: ocrConfig.enabled,
         collectedAt,
         mimeType: stored.mimeType,
@@ -230,19 +243,57 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
       };
 
       if (!ocrConfig.enabled) {
-        await upsertLineManualNewsItem(database, buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "disabled" }));
+        const item = buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "disabled", tesseractFound: null });
+        await upsertLineManualNewsItem(database, item);
+        logLineImageOcr("info", {
+          lineUserAuthorized: true,
+          messageId: event.message.id,
+          downloadStatus: "success",
+          imageSizeBytes: stored.bytes,
+          ocrEnabled: ocrConfig.enabled,
+          tesseractFound: null,
+          ocrLang: ocrConfig.lang,
+          ocrStatus: "disabled",
+          ocrTextLength: 0,
+          dataGaps: item.data_gaps
+        });
         await replyText(event.replyToken, imageOcrReply("disabled"));
         return;
       }
 
       if (stored.bytes > ocrConfig.maxImageBytes || (imageDimensions?.pixels ?? 0) > ocrConfig.maxImagePixels) {
-        await upsertLineManualNewsItem(database, buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "too_large" }));
+        const reason = stored.bytes > ocrConfig.maxImageBytes
+          ? `image bytes ${stored.bytes} exceeds max ${ocrConfig.maxImageBytes}`
+          : `image pixels ${imageDimensions?.pixels ?? 0} exceeds max ${ocrConfig.maxImagePixels}`;
+        const item = buildLineImageNewsItemFromOcr({
+          ...imageBase,
+          ocrStatus: "too_large",
+          ocrErrorCode: "TOO_LARGE",
+          ocrErrorMessage: reason,
+          tesseractFound: null
+        });
+        await upsertLineManualNewsItem(database, item);
+        logLineImageOcr("warn", {
+          lineUserAuthorized: true,
+          messageId: event.message.id,
+          downloadStatus: "success",
+          imageSizeBytes: stored.bytes,
+          ocrEnabled: ocrConfig.enabled,
+          tesseractFound: null,
+          ocrLang: ocrConfig.lang,
+          ocrStatus: "too_large",
+          ocrTextLength: 0,
+          ocrErrorCode: "TOO_LARGE",
+          dataGaps: item.data_gaps
+        });
         await replyText(event.replyToken, imageOcrReply("too_large"));
         return;
       }
 
       let ocrStatus: OcrStatus = "failed";
       let ocrText: string | null = null;
+      let ocrErrorCode: OcrErrorCode | null = null;
+      let ocrErrorMessage: string | null = null;
       try {
         const result = await ocrService.recognizeImage({
           imagePath: stored.filePath,
@@ -251,38 +302,72 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         });
         ocrStatus = result.status;
         ocrText = result.text;
+        ocrErrorCode = result.errorCode ?? null;
+        ocrErrorMessage = result.error ?? null;
       } catch (error) {
-        logger.warn("LINE image OCR failed", { error: String(error), messageId: event.message.id });
-        ocrStatus = "error";
+        ocrErrorMessage = safeOcrErrorSummary(error);
+        logger.warn("LINE image OCR failed", { error: ocrErrorMessage, messageId: event.message.id });
+        ocrStatus = "failed";
+        ocrErrorCode = "EXEC_ERROR";
       }
-      await upsertLineManualNewsItem(
-        database,
-        buildLineImageNewsItemFromOcr({
-          ...imageBase,
-          ocrStatus,
-          ocrText
-        })
-      );
+      const tesseractFound = inferTesseractFound(ocrStatus);
+      const item = buildLineImageNewsItemFromOcr({
+        ...imageBase,
+        ocrStatus,
+        ocrText,
+        ocrErrorCode,
+        ocrErrorMessage,
+        tesseractFound
+      });
+      await upsertLineManualNewsItem(database, item);
+      logLineImageOcr(ocrStatus === "success" ? "info" : "warn", {
+        lineUserAuthorized: true,
+        messageId: event.message.id,
+        downloadStatus: "success",
+        imageSizeBytes: stored.bytes,
+        ocrEnabled: ocrConfig.enabled,
+        tesseractFound,
+        ocrLang: ocrConfig.lang,
+        ocrStatus,
+        ocrTextLength: ocrText?.length ?? 0,
+        ocrErrorCode,
+        dataGaps: item.data_gaps
+      });
       await replyText(event.replyToken, imageOcrReply(ocrStatus));
       return;
     } catch (error) {
-      logger.warn("LINE image download failed; preserving message id only", { error: String(error), messageId: event.message.id });
+      const ocrErrorMessage = safeOcrErrorSummary(error);
+      logger.warn("LINE image download failed; preserving message id only", { error: ocrErrorMessage, messageId: event.message.id });
       await insertLineMessage(database, {
         ...base,
         ...fileRow
       });
-      await upsertLineManualNewsItem(
-        database,
-        buildLineImageNewsItemFromOcr({
-          lineUserHash: base.user_hash,
-          lineUserIdForHash: event.source?.userId,
-          messageId: event.message.id,
-          ocrProvider: ocrConfig.provider,
-          ocrEnabled: ocrConfig.enabled,
-          ocrStatus: "failed",
-          collectedAt
-        })
-      );
+      const item = buildLineImageNewsItemFromOcr({
+        lineUserHash: base.user_hash,
+        lineUserIdForHash: event.source?.userId,
+        messageId: event.message.id,
+        ocrProvider: ocrConfig.provider,
+        ocrLang: ocrConfig.lang,
+        ocrEnabled: ocrConfig.enabled,
+        ocrStatus: "failed",
+        ocrErrorCode: "DOWNLOAD_ERROR",
+        ocrErrorMessage,
+        tesseractFound: null,
+        collectedAt
+      });
+      await upsertLineManualNewsItem(database, item);
+      logLineImageOcr("warn", {
+        lineUserAuthorized: true,
+        messageId: event.message.id,
+        downloadStatus: "failed",
+        ocrEnabled: ocrConfig.enabled,
+        tesseractFound: null,
+        ocrLang: ocrConfig.lang,
+        ocrStatus: "failed",
+        ocrTextLength: 0,
+        ocrErrorCode: "DOWNLOAD_ERROR",
+        dataGaps: item.data_gaps
+      });
       await replyText(event.replyToken, imageOcrReply("failed"));
       return;
     }
@@ -420,6 +505,44 @@ function isAuthorizedManualNewsUser(lineUserId?: string, userHash?: string, auth
     (lineUserId && allowedUserIds.includes(lineUserId)) ||
     (userHash && allowedUserHashes.includes(userHash))
   );
+}
+
+function inferTesseractFound(status: OcrStatus): boolean | null {
+  if (status === "provider_missing") return false;
+  if (status === "disabled" || status === "too_large") return null;
+  return true;
+}
+
+function logLineImageOcr(
+  level: "info" | "warn",
+  context: {
+    lineUserAuthorized: boolean;
+    messageId: string;
+    downloadStatus: "success" | "failed" | "skipped";
+    imageSizeBytes?: number;
+    ocrEnabled: boolean;
+    tesseractFound: boolean | null;
+    ocrLang: string;
+    ocrStatus: string;
+    ocrTextLength: number;
+    ocrErrorCode?: OcrErrorCode | null;
+    dataGaps: string[];
+  }
+): void {
+  logger[level]("line_image_ocr", {
+    event: "line_image_ocr",
+    line_user_authorized: context.lineUserAuthorized,
+    message_id: context.messageId,
+    download_status: context.downloadStatus,
+    image_size_bytes: context.imageSizeBytes ?? null,
+    ocr_enabled: context.ocrEnabled,
+    tesseract_found: context.tesseractFound,
+    ocr_lang: context.ocrLang,
+    ocr_status: context.ocrStatus,
+    ocr_text_length: context.ocrTextLength,
+    ocr_error_code: context.ocrErrorCode ?? null,
+    data_gaps: context.dataGaps
+  });
 }
 
 function imageOcrReply(status: OcrStatus): string {

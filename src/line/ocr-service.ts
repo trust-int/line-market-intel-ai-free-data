@@ -4,7 +4,8 @@ import { config } from "../config.js";
 
 const execFileAsync = promisify(execFile);
 
-export type OcrStatus = "success" | "failed" | "disabled" | "too_large" | "provider_missing" | "error";
+export type OcrStatus = "success" | "failed" | "disabled" | "too_large" | "provider_missing" | "language_missing" | "empty";
+export type OcrErrorCode = "PROVIDER_MISSING" | "LANG_MISSING" | "EMPTY_TEXT" | "EXEC_ERROR" | "DOWNLOAD_ERROR" | "TOO_LARGE";
 
 export type OcrConfig = {
   enabled: boolean;
@@ -21,6 +22,7 @@ export type OcrResult = {
   provider: "tesseract";
   text: string | null;
   textLength: number;
+  errorCode?: OcrErrorCode;
   error?: string;
 };
 
@@ -56,10 +58,10 @@ export class TesseractCliOcrService implements OcrService {
       return buildOcrResult("disabled");
     }
     if (input.imageBytes > this.ocrConfig.maxImageBytes) {
-      return buildOcrResult("too_large");
+      return buildOcrResult("too_large", null, `image bytes ${input.imageBytes} exceeds max ${this.ocrConfig.maxImageBytes}`, "TOO_LARGE");
     }
     if (input.imagePixels && input.imagePixels > this.ocrConfig.maxImagePixels) {
-      return buildOcrResult("too_large");
+      return buildOcrResult("too_large", null, `image pixels ${input.imagePixels} exceeds max ${this.ocrConfig.maxImagePixels}`, "TOO_LARGE");
     }
 
     return withOcrSlot(async () => {
@@ -71,15 +73,18 @@ export class TesseractCliOcrService implements OcrService {
         });
         const text = normalizeOcrText(stdout);
         if (text.length < this.ocrConfig.minTextLength) {
-          return buildOcrResult("failed", text);
+          return buildOcrResult("empty", text, `OCR text length ${text.length} below min ${this.ocrConfig.minTextLength}`, "EMPTY_TEXT");
         }
         return buildOcrResult("success", text);
       } catch (error) {
         const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
         if (code === "ENOENT") {
-          return buildOcrResult("provider_missing", null, "tesseract binary not found");
+          return buildOcrResult("provider_missing", null, "tesseract binary not found", "PROVIDER_MISSING");
         }
-        return buildOcrResult("error", null, String(error));
+        if (isTesseractLanguageMissing(error, this.ocrConfig.lang)) {
+          return buildOcrResult("language_missing", null, safeOcrErrorSummary(error), "LANG_MISSING");
+        }
+        return buildOcrResult("failed", null, safeOcrErrorSummary(error), "EXEC_ERROR");
       }
     });
   }
@@ -107,12 +112,50 @@ export function normalizeOcrText(text: string): string {
     .trim();
 }
 
-function buildOcrResult(status: OcrStatus, text: string | null = null, error?: string): OcrResult {
+export function safeOcrErrorSummary(error: unknown, maxLength = 300): string {
+  const record = typeof error === "object" && error ? error as Record<string, unknown> : {};
+  const parts = [
+    typeof record.message === "string" ? record.message : undefined,
+    typeof record.stderr === "string" ? record.stderr : undefined,
+    Buffer.isBuffer(record.stderr) ? record.stderr.toString("utf8") : undefined,
+    typeof record.stdout === "string" ? record.stdout : undefined,
+    Buffer.isBuffer(record.stdout) ? record.stdout.toString("utf8") : undefined,
+    typeof error === "string" ? error : undefined
+  ].filter((part): part is string => Boolean(part));
+  let summary = (parts.join(" ") || String(error ?? "unknown error"))
+    .replace(/\s+/g, " ")
+    .trim();
+  for (const secret of [
+    process.env.ADMIN_TOKEN,
+    process.env.LINE_CHANNEL_SECRET,
+    process.env.LINE_CHANNEL_ACCESS_TOKEN,
+    process.env.GPT_ACTION_BEARER_TOKEN
+  ]) {
+    if (secret && secret.length >= 6) {
+      summary = summary.split(secret).join("[redacted]");
+    }
+  }
+  return summary.slice(0, maxLength);
+}
+
+function buildOcrResult(status: OcrStatus, text: string | null = null, error?: string, errorCode?: OcrErrorCode): OcrResult {
   return {
     status,
     provider: "tesseract",
     text,
     textLength: text?.length ?? 0,
+    errorCode,
     error
   };
+}
+
+function isTesseractLanguageMissing(error: unknown, lang: string): boolean {
+  const summary = safeOcrErrorSummary(error, 2000).toLowerCase();
+  const requestedLangs = lang.split("+").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  return (
+    summary.includes("failed loading language") ||
+    summary.includes("couldn't load any languages") ||
+    summary.includes("error opening data file") ||
+    requestedLangs.some((requestedLang) => summary.includes(`${requestedLang}.traineddata`))
+  );
 }
