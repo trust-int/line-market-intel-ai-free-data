@@ -470,6 +470,11 @@ paths:
   /gpt/news/today/summary:
     get:
       operationId: getTodayNewsSummary
+      summary: Read compact LINE/manual news summary for today
+      description: >
+        Preferred news endpoint for GPT. Returns compact, bounded LINE manual news,
+        image/file extraction summaries, tickers, sectors, data gaps, and
+        interpretation limits. Use this instead of raw news endpoints.
       parameters:
         - name: limit
           in: query
@@ -484,16 +489,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NewsSummaryResponse"
-  /gpt/news/today:
-    get:
-      operationId: getTodayNews
-      responses:
-        "200":
-          description: User-provided and public news summaries.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/GenericResponse"
   /gpt/sources/status:
     get:
       operationId: getSourcesStatus
