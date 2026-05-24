@@ -20,6 +20,7 @@ RUN npm run build
 FROM node:20-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ENV OMP_THREAD_LIMIT=1
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \

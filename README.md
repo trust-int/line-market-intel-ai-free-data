@@ -143,7 +143,7 @@ MVP 指令：
 - `/刪除新聞 2330`：封存今日指定代號相關 LINE manual news
 - `/成本`
 
-`/gpt/news/today/summary` 以台北時間 15:30 作為每日切換點，只讀目前盤後資料日、`status=active` 的 `news_items`，並排除測試來源與明顯的 API 錯誤回覆。清空與刪除指令只做封存，不會硬刪資料，方便之後追查。
+`/gpt/news/today/summary` 只讀寫入時 `market_date` 等於台北今天、且 `archived=false` 的 `news_items`，並排除測試來源與明顯的 API 錯誤回覆。清空與刪除指令只做封存，不會硬刪資料，方便之後追查。
 
 ### LINE Image OCR / File Text Ingestion MVP
 
@@ -153,6 +153,8 @@ OCR_PROVIDER=tesseract
 OCR_LANG=chi_tra+eng
 OCR_MIN_TEXT_LENGTH=10
 OCR_MAX_IMAGE_BYTES=5242880
+OCR_MAX_IMAGE_PIXELS=2500000
+OCR_TIMEOUT_MS=15000
 FILE_INGEST_ENABLED=true
 FILE_MAX_BYTES=10485760
 FILE_TEXT_MAX_CHARS=12000
@@ -162,6 +164,8 @@ FILE_FULL_TEXT_MAX_CHARS=50000
 - `OCR_ENABLED` 未設定時預設 `false`。
 - `OCR_PROVIDER` MVP 只支援 `tesseract`，使用本機 `tesseract` CLI，不接付費雲端 OCR。
 - `OCR_MAX_IMAGE_BYTES` 預設 5 MB，超過會跳過 OCR，寫入 `image_too_large/ocr_skipped/text_missing`。
+- `OCR_MAX_IMAGE_PIXELS` 預設 2,500,000 pixels，避免高解析圖片讓 Render Free 記憶體爆掉。
+- `OCR_TIMEOUT_MS` 預設 15 秒，超時會標記 OCR 失敗，不讓 webhook 卡住。
 - OCR 成功時，系統會抽出台股 4 位數代號與常見題材，例如 AI伺服器、PCB、散熱、記憶體、半導體封測、機器人、軍工。
 - OCR 失敗、未啟用或環境缺 tesseract 時，不會讓 webhook crash，也不會臆測圖片內容；GPT 只能看到 `data_gaps`。
 - `FILE_INGEST_ENABLED=false` 時，檔案只保存 metadata，不抽文字。
@@ -169,7 +173,7 @@ FILE_FULL_TEXT_MAX_CHARS=50000
 - `FILE_TEXT_MAX_CHARS` 控制 summary 文字上限，避免 GPT summary payload 過大。
 - `FILE_FULL_TEXT_MAX_CHARS` 控制 DB 保存的 full text 上限；summary endpoint 只回短預覽與 `has_full_text/full_text_chars`。
 
-Render Node runtime 不一定內建 tesseract。若沒有安裝 tesseract，請先維持 `OCR_ENABLED=false`；若改用 Docker 或自管 Ubuntu，需安裝 `tesseract-ocr` 與繁中語言包後再設 `OCR_ENABLED=true`。
+Render Node runtime 不一定內建 tesseract。若沒有安裝 tesseract，請先維持 `OCR_ENABLED=false`；若改用 Docker 或自管 Ubuntu，需安裝 `tesseract-ocr` 與繁中語言包後再設 `OCR_ENABLED=true`。Render Free 記憶體很小，建議 `OCR_LANG=chi_tra`、`OCR_MAX_IMAGE_BYTES=1048576`、`OCR_MAX_IMAGE_PIXELS=2500000`，英文 OCR 需求很高時再改回 `chi_tra+eng` 或升級 instance。
 
 ## Supabase / PostgreSQL
 
@@ -458,6 +462,34 @@ crawler -> POST /internal/ingest/news -> news_items -> GET /gpt/news/today/summa
 ```
 
 `/internal/ingest/news` 會先檢查 `ADMIN_TOKEN`，再檢查每筆 `source` 是否在 `NEWS_INGEST_ALLOWED_SOURCES`。未列入白名單的 crawler/source 會回 `403 source_not_allowed`，整批不寫入 `news_items`，並更新 `data_source_status` 的錯誤原因。
+
+`news_items.archived=true` 表示 DB 仍保留原始資料，但 GPT Action 不再讀取。`/news`、`/manual`、圖片 OCR 與檔案文字抽取寫入時會設定 `market_date=Asia/Taipei` 今天、`archived=false`、`parser_version`，並把 LINE 原文或檔案 metadata 放進 `raw_payload` 供追查；`raw_payload` 不會從 GPT Action 回傳。本系統以寫入時的 Asia/Taipei 日期作為 `market_date`，因此每天台北時間 00:05 後新 LINE 資料會自然進入新一天 bucket。`/gpt/news/today/summary` 只讀今天 `market_date`。
+
+LINE 可用：
+
+```text
+/清空今日新聞
+```
+
+這會把今天的 LINE manual/OCR/file news 封存，不刪除資料；封存後 GPT Action 不會再讀取。
+
+驗收流程：
+
+```text
+/news 2330 台積電 AI 伺服器需求強 https://example.com/news
+```
+
+```bash
+curl -s "https://line-market-intel-ai-free-data.onrender.com/gpt/news/today/summary?limit=5" -H "Authorization: Bearer $GPT_ACTION_BEARER_TOKEN"
+```
+
+再從 LINE 傳：
+
+```text
+/清空今日新聞
+```
+
+再次查詢 summary 應看不到剛剛那筆；資料庫仍保留該列並標示 `archived=true`。
 
 候選股與族群 MVP builder：
 

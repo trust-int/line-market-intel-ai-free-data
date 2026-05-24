@@ -10,6 +10,7 @@ import { downloadLineMessageContent } from "./download.js";
 import { replyLineText } from "./push.js";
 import { hashLineUserId, verifyLineSignature } from "./signature.js";
 import { handleLineCommand } from "./commands.js";
+import { detectImageDimensions } from "./image-dimensions.js";
 import { buildLineFileNewsItemFromExtraction, buildLineImageNewsItemFromOcr, parseLineManualNewsText, upsertLineManualNewsItem } from "./manual-news.js";
 import type { OcrConfig, OcrService, OcrStatus } from "./ocr-service.js";
 import { resolveOcrConfig, TesseractCliOcrService } from "./ocr-service.js";
@@ -146,7 +147,8 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         text,
         manualKind,
         event.message.id,
-        event.timestamp ? new Date(event.timestamp) : new Date()
+        event.timestamp ? new Date(event.timestamp) : new Date(),
+        base.user_hash
       );
       if (!manualNews) {
         await replyText(event.replyToken, manualKind === "news" ? "格式：/news 文字內容" : "格式：/manual 文字內容");
@@ -157,6 +159,10 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
       return;
     }
     if (text.startsWith("/")) {
+      if (text.trim() === "/清空今日新聞" && !isAuthorizedManualNewsUser(event.source?.userId, base.user_hash, deps.manualNewsAuth)) {
+        await replyText(event.replyToken, "unauthorized");
+        return;
+      }
       const result = await handleLineCommand(text, {
         database,
         scope: {
@@ -189,6 +195,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
     let fileRow: Record<string, unknown> = {};
     try {
       const downloaded = await downloadContent(event.message.id);
+      const imageDimensions = detectImageDimensions(downloaded.body);
       const stored = await storage.putObject({
         namespace: "line",
         fileName: event.message.fileName ?? downloaded.fileName,
@@ -212,6 +219,9 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         messageId: event.message.id,
         imageHash: stored.sha256,
         imageSizeBytes: stored.bytes,
+        imageWidth: imageDimensions?.width,
+        imageHeight: imageDimensions?.height,
+        imagePixels: imageDimensions?.pixels,
         ocrProvider: ocrConfig.provider,
         ocrEnabled: ocrConfig.enabled,
         collectedAt,
@@ -225,7 +235,7 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
         return;
       }
 
-      if (stored.bytes > ocrConfig.maxImageBytes) {
+      if (stored.bytes > ocrConfig.maxImageBytes || (imageDimensions?.pixels ?? 0) > ocrConfig.maxImagePixels) {
         await upsertLineManualNewsItem(database, buildLineImageNewsItemFromOcr({ ...imageBase, ocrStatus: "too_large" }));
         await replyText(event.replyToken, imageOcrReply("too_large"));
         return;
@@ -234,7 +244,11 @@ export async function processLineEvent(event: LineWebhookEvent, deps: LineWebhoo
       let ocrStatus: OcrStatus = "failed";
       let ocrText: string | null = null;
       try {
-        const result = await ocrService.recognizeImage({ imagePath: stored.filePath, imageBytes: stored.bytes });
+        const result = await ocrService.recognizeImage({
+          imagePath: stored.filePath,
+          imageBytes: stored.bytes,
+          imagePixels: imageDimensions?.pixels
+        });
         ocrStatus = result.status;
         ocrText = result.text;
       } catch (error) {

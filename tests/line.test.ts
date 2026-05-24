@@ -32,16 +32,26 @@ class FakeDb implements Queryable {
         data_quality_score: params?.[11],
         data_gaps: JSON.parse(String(params?.[12] ?? "[]")),
         interpretation_limit: params?.[13],
-        collected_at: "2026-05-24T01:00:00.000Z",
-        metadata: JSON.parse(String(params?.[15] ?? "{}"))
+        collected_at: params?.[14] ?? "2026-05-24T01:00:00.000Z",
+        metadata: JSON.parse(String(params?.[15] ?? "{}")),
+        raw_payload: JSON.parse(String(params?.[16] ?? "{}")),
+        market_date: params?.[17],
+        parser_version: params?.[18],
+        archived: false
       };
       this.newsItems = this.newsItems.filter((item) => item.id !== row.id);
       this.newsItems.push(row);
       return { rows: [] as T[], rowCount: 1 };
     }
     if (sql.includes("from news_items")) {
+      const marketDateParam = params?.find((param) => typeof param === "string" && /^\d{4}-\d{2}-\d{2}$/.test(param));
+      const rows = this.newsItems.filter((item) => {
+        if (sql.includes("market_date") && marketDateParam && item.market_date !== marketDateParam) return false;
+        if (sql.includes("coalesce(archived, false) = false") && item.archived === true) return false;
+        return true;
+      });
       return {
-        rows: this.newsItems.map((item) => ({
+        rows: rows.map((item) => ({
           source: item.source,
           source_url: item.source_url,
           title: item.title,
@@ -59,10 +69,23 @@ class FakeDb implements Queryable {
           license_status: item.interpretation_limit,
           published_at: item.collected_at,
           fetched_at: item.collected_at,
-          collected_at: item.collected_at
+          collected_at: item.collected_at,
+          market_date: item.market_date
         })) as T[],
-        rowCount: this.newsItems.length
+        rowCount: rows.length
       };
+    }
+    if (sql.includes("update news_items") && sql.includes("archived = true")) {
+      const marketDate = params?.[0];
+      const manualSources = new Set(["line_manual", "line_manual_pack", "line_image_manual", "line_image_ocr", "line_file_text", "line_file_manual"]);
+      const manualTypes = new Set(["manual", "manual_pack_note", "image_manual", "image_ocr", "file_manual", "file_text"]);
+      const matches = (item: Record<string, unknown>) =>
+        item.archived !== true &&
+        item.market_date === marketDate &&
+        (manualSources.has(String(item.source)) || manualTypes.has(String(item.event_type)));
+      const before = this.newsItems.filter(matches).length;
+      this.newsItems = this.newsItems.map((item) => matches(item) ? { ...item, archived: true, archived_at: "2026-05-24T01:00:00.000Z" } : item);
+      return { rows: [] as T[], rowCount: before };
     }
     return { rows: [] as T[], rowCount: 1 };
   }
@@ -133,6 +156,15 @@ describe("LINE ingestion", () => {
     expect(params?.[11]).toBe(55);
     expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["full_text_missing", "source_url_missing", "summary_too_short"]));
     expect(params?.[13]).toBe("brief_manual_note_only");
+    expect(params?.[17]).toBe("2026-05-24");
+    expect(params?.[18]).toBe("line_manual_v2");
+    expect(JSON.parse(String(params?.[16]))).toMatchObject({
+      raw_text: "/news 2330 台積電 AI 伺服器出貨升溫",
+      line_message_type: "text",
+      line_message_id: "m-event-news",
+      line_user_id_hash: expect.any(String),
+      parser_version: "line_manual_v2"
+    });
     expect(replies[0]).toBe("已收錄到今日 manual news，可由 /gpt/news/today/summary 讀取。");
   });
 
@@ -150,6 +182,15 @@ describe("LINE ingestion", () => {
     expect(params?.[11]).toBe(60);
     expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["full_text_missing", "source_url_missing", "summary_too_short"]));
     expect(params?.[13]).toBe("brief_manual_note_only");
+    expect(params?.[17]).toBe("2026-05-24");
+    expect(params?.[18]).toBe("line_manual_v2");
+    expect(JSON.parse(String(params?.[16]))).toMatchObject({
+      raw_text: "/manual 2454 聯發科 法說重點摘要",
+      line_message_type: "text",
+      line_message_id: "m-event-manual",
+      line_user_id_hash: expect.any(String),
+      parser_version: "line_manual_v2"
+    });
   });
 
   it("extracts related_tickers from /news and /manual", async () => {
@@ -245,6 +286,8 @@ describe("LINE ingestion", () => {
           interpretation_limit: string;
           data_gaps: string[];
           collected_at: string;
+          market_date?: string;
+          raw_payload?: unknown;
         }>;
       };
       expect(response.status).toBe(200);
@@ -257,6 +300,8 @@ describe("LINE ingestion", () => {
       expect(body.line_manual_news[0]?.interpretation_limit).toBe("brief_manual_note_only");
       expect(body.line_manual_news[0]?.data_gaps).toContain("summary_too_short");
       expect(body.line_manual_news[0]?.collected_at).toBe("2026-05-24T01:00:00.000Z");
+      expect(body.line_manual_news[0]?.market_date).toBe("2026-05-24");
+      expect(body.line_manual_news[0]?.raw_payload).toBeUndefined();
     } finally {
       close();
     }
@@ -412,6 +457,35 @@ describe("LINE ingestion", () => {
     expect(params?.[13]).toBe("image_without_ocr");
   });
 
+  it("high pixel image skips OCR before invoking tesseract", async () => {
+    const database = new FakeDb();
+    const calls: string[] = [];
+    const image = pngWithDimensions(200, 200);
+    await processLineEvent(imageEvent("image-pixels-large", "event-image-pixels-large"), {
+      database,
+      storage: fakeStorage(image.length),
+      seen: new Set<string>(),
+      downloadContent: async () => ({ body: image, mimeType: "image/png", fileName: "image-pixels-large.png" }),
+      ocrConfig: { enabled: true, maxImageBytes: 5242880, maxImagePixels: 100 },
+      ocrService: {
+        async recognizeImage() {
+          calls.push("called");
+          return { status: "success", provider: "tesseract", text: "should not run", textLength: 14 };
+        }
+      },
+      replyText: async () => ({})
+    });
+    const params = findNewsInsert(database);
+    expect(calls).toHaveLength(0);
+    expect(params?.[11]).toBe(25);
+    expect(JSON.parse(String(params?.[12]))).toEqual(expect.arrayContaining(["image_too_large", "ocr_skipped", "text_missing"]));
+    expect(JSON.parse(String(params?.[15]))).toMatchObject({
+      image_width: 200,
+      image_height: 200,
+      image_pixels: 40000
+    });
+  });
+
   it("does not download or write image news_items for unauthorized LINE user", async () => {
     const database = new FakeDb();
     const replies: string[] = [];
@@ -448,6 +522,73 @@ describe("LINE ingestion", () => {
     expect(archiveQuery?.sql).toContain("line_image_manual");
     expect(archiveQuery?.sql).toContain("line_file_text");
     expect(archiveQuery?.sql).toContain("line_file_manual");
+  });
+
+  it("/清空今日新聞 requires an authorized LINE user", async () => {
+    const database = new FakeDb();
+    const replies: string[] = [];
+    await processLineEvent(textEvent("/清空今日新聞", "event-clear-unauthorized"), {
+      database,
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U999"] },
+      replyText: async (_token, text) => {
+        replies.push(text);
+        return {};
+      }
+    });
+    expect(replies).toEqual(["unauthorized"]);
+    expect(database.queries.some((query) => query.sql.includes("update news_items"))).toBe(false);
+  });
+
+  it("/清空今日新聞 keeps DB rows but removes them from GPT summary", async () => {
+    const database = new FakeDb();
+    await processLineEvent(textEvent("/news 2330 台積電 AI 伺服器需求強 https://example.com/news", "event-clear-readable"), {
+      database,
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U123"] },
+      replyText: async () => ({})
+    });
+    expect(database.newsItems).toHaveLength(1);
+    await processLineEvent(textEvent("/清空今日新聞", "event-clear-after-news"), {
+      database,
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U123"] },
+      replyText: async () => ({})
+    });
+    expect(database.newsItems[0]?.archived).toBe(true);
+
+    const { base, close } = await startGptRouter(database);
+    try {
+      const response = await fetch(`${base}/gpt/news/today/summary?limit=20`, {
+        headers: { Authorization: `Bearer ${config.gptActionBearerToken}` }
+      });
+      const body = await response.json() as { status: string; line_manual_news: unknown[]; data_gaps: string[] };
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("empty");
+      expect(body.line_manual_news).toEqual([]);
+      expect(body.data_gaps).toEqual(["news_empty"]);
+    } finally {
+      close();
+    }
+  });
+
+  it("/清空今日新聞 does not archive non-manual crawler rows", async () => {
+    const database = new FakeDb();
+    database.newsItems.push({
+      id: "crawler-1",
+      source: "crawler_public",
+      event_type: "other",
+      title: "crawler row",
+      market_date: "2026-05-24",
+      archived: false
+    });
+    await processLineEvent(textEvent("/清空今日新聞", "event-clear-crawler"), {
+      database,
+      seen: new Set<string>(),
+      manualNewsAuth: { allowedUserIds: ["U123"] },
+      replyText: async () => ({})
+    });
+    expect(database.newsItems[0]?.archived).toBe(false);
   });
 
   it("/gpt/news/today/summary returns OCR failed rows with null summary and data_gaps", async () => {
@@ -623,6 +764,14 @@ function fakeStorage(bytes?: number): StorageProvider {
       };
     }
   };
+}
+
+function pngWithDimensions(width: number, height: number): Buffer {
+  const buffer = Buffer.alloc(24);
+  buffer.set(Buffer.from("89504e470d0a1a0a", "hex"), 0);
+  buffer.writeUInt32BE(width, 16);
+  buffer.writeUInt32BE(height, 20);
+  return buffer;
 }
 
 function fakeOcrService(status: OcrStatus, text: string | null): OcrService {

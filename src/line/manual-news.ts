@@ -1,8 +1,10 @@
 import type { Queryable } from "../db/client.js";
 import { config } from "../config.js";
+import { getTaipeiDateString } from "../utils/date.js";
 import { sha256Hex } from "../utils/hash.js";
 
 export type LineManualNewsKind = "news" | "manual";
+export const LINE_MANUAL_NEWS_PARSER_VERSION = "line_manual_v2";
 
 export type LineManualNewsItem = {
   id: string;
@@ -21,6 +23,9 @@ export type LineManualNewsItem = {
   interpretation_limit: string;
   collected_at?: string;
   metadata?: Record<string, unknown>;
+  raw_payload?: Record<string, unknown>;
+  market_date?: string;
+  parser_version?: string;
 };
 
 export type LineImageNewsBuildParams = {
@@ -29,6 +34,9 @@ export type LineImageNewsBuildParams = {
   messageId: string;
   imageHash?: string;
   imageSizeBytes?: number;
+  imageWidth?: number;
+  imageHeight?: number;
+  imagePixels?: number;
   ocrProvider?: string;
   ocrEnabled: boolean;
   ocrStatus: "success" | "failed" | "disabled" | "too_large" | "provider_missing" | "error";
@@ -69,7 +77,8 @@ export function parseLineManualNewsText(
   text: string,
   kind: LineManualNewsKind,
   messageId: string,
-  collectedAt = new Date()
+  collectedAt = new Date(),
+  lineUserHash?: string
 ): LineManualNewsItem | null {
   const prefix = kind === "news" ? "/news" : "/manual";
   if (!text.trim().toLowerCase().startsWith(prefix)) return null;
@@ -102,14 +111,24 @@ export function parseLineManualNewsText(
     data_quality_score: isManualPackNote ? Math.min(baseScore + 5, 70) : baseScore,
     data_gaps: dataGaps,
     interpretation_limit: urlOnly ? "link_only" : body.length >= 80 ? "title_or_summary_only" : "brief_manual_note_only",
-    collected_at: timestamp
+    collected_at: timestamp,
+    market_date: getTaipeiDateString(collectedAt),
+    parser_version: LINE_MANUAL_NEWS_PARSER_VERSION,
+    raw_payload: {
+      raw_text: text,
+      line_message_type: "text",
+      line_message_id: messageId,
+      line_user_id_hash: lineUserHash,
+      received_at: timestamp,
+      parser_version: LINE_MANUAL_NEWS_PARSER_VERSION
+    }
   };
 }
 
 export function buildLineImageNewsItem(
   messageId: string,
   collectedAt = new Date(),
-  overrides: Partial<Pick<LineManualNewsItem, "id" | "data_quality_score" | "data_gaps" | "metadata">> = {}
+  overrides: Partial<Pick<LineManualNewsItem, "id" | "data_quality_score" | "data_gaps" | "metadata" | "raw_payload">> = {}
 ): LineManualNewsItem {
   return {
     id: overrides.id ?? `line-image-${messageId}`,
@@ -127,7 +146,10 @@ export function buildLineImageNewsItem(
     data_gaps: overrides.data_gaps ?? ["image_only", "ocr_not_available", "text_missing"],
     interpretation_limit: "image_without_ocr",
     collected_at: collectedAt.toISOString(),
-    metadata: overrides.metadata
+    market_date: getTaipeiDateString(collectedAt),
+    parser_version: LINE_MANUAL_NEWS_PARSER_VERSION,
+    metadata: overrides.metadata,
+    raw_payload: overrides.raw_payload
   };
 }
 
@@ -163,6 +185,9 @@ export function buildLineImageNewsItemFromOcr(params: LineImageNewsBuildParams):
       data_gaps: dataGaps,
       interpretation_limit: ocrText.length >= 80 ? "ocr_text_available" : "brief_ocr_text_only",
       collected_at: collectedAt.toISOString(),
+      market_date: getTaipeiDateString(collectedAt),
+      parser_version: LINE_MANUAL_NEWS_PARSER_VERSION,
+      raw_payload: buildImageRawPayload(params, collectedAt),
       metadata
     };
   }
@@ -173,6 +198,7 @@ export function buildLineImageNewsItemFromOcr(params: LineImageNewsBuildParams):
     id: `line-image-${sha256Hex(hashInput)}`,
     data_quality_score: score,
     data_gaps: statusGaps,
+    raw_payload: buildImageRawPayload(params, collectedAt),
     metadata
   });
 }
@@ -208,6 +234,9 @@ export function buildLineFileNewsItemFromExtraction(params: LineFileNewsBuildPar
       data_gaps: dataGaps,
       interpretation_limit: text.length >= 200 ? "file_text_available" : text.length >= 80 ? "short_file_text_available" : "brief_file_text_only",
       collected_at: collectedAt.toISOString(),
+      market_date: getTaipeiDateString(collectedAt),
+      parser_version: LINE_MANUAL_NEWS_PARSER_VERSION,
+      raw_payload: buildFileRawPayload(params, collectedAt),
       metadata
     };
   }
@@ -229,6 +258,9 @@ export function buildLineFileNewsItemFromExtraction(params: LineFileNewsBuildPar
     data_gaps: dataGaps,
     interpretation_limit: "file_without_text",
     collected_at: collectedAt.toISOString(),
+    market_date: getTaipeiDateString(collectedAt),
+    parser_version: LINE_MANUAL_NEWS_PARSER_VERSION,
+    raw_payload: buildFileRawPayload(params, collectedAt),
     metadata
   };
 }
@@ -239,8 +271,9 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
        id, source, title, summary, full_text, source_url,
        related_tickers, related_sectors, event_type, importance,
        is_mops, data_quality_score, data_gaps,
-       interpretation_limit, collected_at, metadata, status, archived_at, archived_reason
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()),coalesce($16::jsonb, '{}'::jsonb),'active',null,null)
+       interpretation_limit, collected_at, metadata, archived, archived_at, archived_reason,
+       raw_payload, market_date, parser_version, status
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()),coalesce($16::jsonb, '{}'::jsonb),false,null,null,coalesce($17::jsonb, '{}'::jsonb),$18::date,$19,'active')
      on conflict (id) do update set
        source = excluded.source,
        title = excluded.title,
@@ -257,9 +290,13 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
        interpretation_limit = excluded.interpretation_limit,
        collected_at = excluded.collected_at,
        metadata = excluded.metadata,
+       archived = false,
        status = 'active',
        archived_at = null,
-       archived_reason = null`,
+       archived_reason = null,
+       raw_payload = excluded.raw_payload,
+       market_date = excluded.market_date,
+       parser_version = excluded.parser_version`,
     [
       item.id,
       item.source,
@@ -276,7 +313,10 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
       JSON.stringify(item.data_gaps),
       item.interpretation_limit,
       item.collected_at,
-      JSON.stringify(item.metadata ?? {})
+      JSON.stringify(item.metadata ?? {}),
+      JSON.stringify(item.raw_payload ?? {}),
+      item.market_date ?? getTaipeiDateString(item.collected_at ? new Date(item.collected_at) : new Date()),
+      item.parser_version ?? LINE_MANUAL_NEWS_PARSER_VERSION
     ]
   );
 }
@@ -307,12 +347,32 @@ function buildImageMetadata(params: LineImageNewsBuildParams): Record<string, un
     message_type: "image",
     image_hash: params.imageHash,
     image_size_bytes: params.imageSizeBytes,
+    image_width: params.imageWidth,
+    image_height: params.imageHeight,
+    image_pixels: params.imagePixels,
     mime_type: params.mimeType,
     file_path: params.filePath,
     ocr_provider: params.ocrProvider ?? "tesseract",
     ocr_enabled: params.ocrEnabled,
     ocr_status: params.ocrStatus,
     ocr_text_length: params.ocrText?.length ?? 0
+  };
+}
+
+function buildImageRawPayload(params: LineImageNewsBuildParams, collectedAt: Date): Record<string, unknown> {
+  return {
+    line_message_type: "image",
+    line_message_id: params.messageId,
+    line_user_id_hash: params.lineUserHash,
+    image_hash: params.imageHash,
+    file_size_bytes: params.imageSizeBytes,
+    image_width: params.imageWidth,
+    image_height: params.imageHeight,
+    image_pixels: params.imagePixels,
+    mime_type: params.mimeType,
+    file_path: params.filePath,
+    received_at: collectedAt.toISOString(),
+    parser_version: LINE_MANUAL_NEWS_PARSER_VERSION
   };
 }
 
@@ -337,6 +397,21 @@ function buildFileMetadata(params: LineFileNewsBuildParams): Record<string, unkn
     file_type: params.fileType,
     extraction_status: params.extractionStatus,
     extracted_text_length: params.extractedText?.length ?? 0
+  };
+}
+
+function buildFileRawPayload(params: LineFileNewsBuildParams, collectedAt: Date): Record<string, unknown> {
+  return {
+    line_message_type: "file",
+    line_message_id: params.messageId,
+    line_user_id_hash: params.lineUserHash,
+    filename: params.fileName,
+    file_size_bytes: params.fileSizeBytes,
+    file_type: params.fileType,
+    mime_type: params.mimeType,
+    file_path: params.filePath,
+    received_at: collectedAt.toISOString(),
+    parser_version: LINE_MANUAL_NEWS_PARSER_VERSION
   };
 }
 

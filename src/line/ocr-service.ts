@@ -12,6 +12,8 @@ export type OcrConfig = {
   lang: string;
   minTextLength: number;
   maxImageBytes: number;
+  maxImagePixels: number;
+  timeoutMs: number;
 };
 
 export type OcrResult = {
@@ -25,6 +27,7 @@ export type OcrResult = {
 export type OcrRecognizeInput = {
   imagePath: string;
   imageBytes: number;
+  imagePixels?: number;
 };
 
 export interface OcrService {
@@ -37,9 +40,13 @@ export function resolveOcrConfig(overrides: Partial<OcrConfig> = {}): OcrConfig 
     provider: overrides.provider ?? config.ocrProvider ?? "tesseract",
     lang: overrides.lang ?? config.ocrLang ?? "chi_tra+eng",
     minTextLength: overrides.minTextLength ?? config.ocrMinTextLength ?? 10,
-    maxImageBytes: overrides.maxImageBytes ?? config.ocrMaxImageBytes ?? 5242880
+    maxImageBytes: overrides.maxImageBytes ?? config.ocrMaxImageBytes ?? 5242880,
+    maxImagePixels: overrides.maxImagePixels ?? config.ocrMaxImagePixels ?? 2500000,
+    timeoutMs: overrides.timeoutMs ?? config.ocrTimeoutMs ?? 15000
   };
 }
+
+let ocrQueue = Promise.resolve();
 
 export class TesseractCliOcrService implements OcrService {
   constructor(private readonly ocrConfig = resolveOcrConfig()) {}
@@ -51,24 +58,44 @@ export class TesseractCliOcrService implements OcrService {
     if (input.imageBytes > this.ocrConfig.maxImageBytes) {
       return buildOcrResult("too_large");
     }
-
-    try {
-      const { stdout } = await execFileAsync("tesseract", [input.imagePath, "stdout", "-l", this.ocrConfig.lang], {
-        timeout: 30000,
-        maxBuffer: 1024 * 1024 * 4
-      });
-      const text = normalizeOcrText(stdout);
-      if (text.length < this.ocrConfig.minTextLength) {
-        return buildOcrResult("failed", text);
-      }
-      return buildOcrResult("success", text);
-    } catch (error) {
-      const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
-      if (code === "ENOENT") {
-        return buildOcrResult("provider_missing", null, "tesseract binary not found");
-      }
-      return buildOcrResult("error", null, String(error));
+    if (input.imagePixels && input.imagePixels > this.ocrConfig.maxImagePixels) {
+      return buildOcrResult("too_large");
     }
+
+    return withOcrSlot(async () => {
+      try {
+        const { stdout } = await execFileAsync("tesseract", [input.imagePath, "stdout", "-l", this.ocrConfig.lang], {
+          timeout: this.ocrConfig.timeoutMs,
+          maxBuffer: 1024 * 1024 * 2,
+          env: { ...process.env, OMP_THREAD_LIMIT: "1" }
+        });
+        const text = normalizeOcrText(stdout);
+        if (text.length < this.ocrConfig.minTextLength) {
+          return buildOcrResult("failed", text);
+        }
+        return buildOcrResult("success", text);
+      } catch (error) {
+        const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "";
+        if (code === "ENOENT") {
+          return buildOcrResult("provider_missing", null, "tesseract binary not found");
+        }
+        return buildOcrResult("error", null, String(error));
+      }
+    });
+  }
+}
+
+async function withOcrSlot<T>(task: () => Promise<T>): Promise<T> {
+  const previous = ocrQueue.catch(() => undefined);
+  let release: () => void = () => undefined;
+  ocrQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
   }
 }
 

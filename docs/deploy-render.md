@@ -64,8 +64,13 @@ If you want image OCR:
 ```env
 OCR_ENABLED=true
 OCR_PROVIDER=tesseract
-OCR_LANG=chi_tra+eng
+OCR_LANG=chi_tra
+OCR_MAX_IMAGE_BYTES=1048576
+OCR_MAX_IMAGE_PIXELS=2500000
+OCR_TIMEOUT_MS=15000
 ```
+
+Render Free memory is tight for tesseract, especially with `chi_tra+eng`. Use `chi_tra` and the size/pixel limits above for the first OCR rollout. If you need better English OCR or large screenshots, upgrade the instance before raising these limits.
 
 5. Redeploy, then send a screenshot containing text to LINE.
 6. Confirm `/gpt/news/today/summary` returns `source=line_image_ocr` and a non-null `summary`.

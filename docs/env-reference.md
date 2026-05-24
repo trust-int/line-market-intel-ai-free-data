@@ -39,6 +39,8 @@ cp .env.production.example .env
 | `OCR_LANG=chi_tra+eng` | chi_tra+eng | Tesseract language pack list. |
 | `OCR_MIN_TEXT_LENGTH=10` | 10 | Text shorter than this is treated as OCR failed. |
 | `OCR_MAX_IMAGE_BYTES=5242880` | 5242880 | Images above this size skip OCR and remain image metadata only. |
+| `OCR_MAX_IMAGE_PIXELS=2500000` | 2500000 | Images above this pixel count skip OCR to protect small Render instances. |
+| `OCR_TIMEOUT_MS=15000` | 15000 | Maximum tesseract runtime per image before marking OCR failed. |
 | `FILE_INGEST_ENABLED=true` | true | Enables LINE file text extraction for PDF/text-like files. |
 | `FILE_MAX_BYTES=10485760` | 10485760 | Files above this size skip extraction and remain metadata only. |
 | `FILE_TEXT_MAX_CHARS=12000` | 12000 | Max extracted text stored in summary fields. |
