@@ -26,9 +26,48 @@ components:
       type: object
       description: Flexible object for API-specific payloads.
       properties:
+        status:
+          type: string
+          description: Response status.
         summary:
           type: string
           description: Human-readable summary when available.
+        message:
+          type: string
+          description: Human-readable message when available.
+      additionalProperties: true
+
+    FlexibleNewsSummaryResponse:
+      type: object
+      description: Flexible compact LINE manual news and OCR summary response.
+      properties:
+        status:
+          type: string
+          description: Response status.
+        date:
+          type: string
+          description: Manual news bucket date.
+        limit:
+          type: integer
+          description: Number of items requested.
+        items:
+          type: array
+          description: Compact news items.
+          items:
+            $ref: "#/components/schemas/NewsItem"
+        line_manual_news:
+          type: array
+          description: LINE manual news and OCR items.
+          items:
+            $ref: "#/components/schemas/NewsItem"
+        data_available:
+          type: boolean
+          description: Whether rows are available.
+        data_gaps:
+          type: array
+          description: Known data gaps.
+          items:
+            type: string
       additionalProperties: true
 
     SignalEngine:
@@ -389,7 +428,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/reports/{date}:
     get:
@@ -421,7 +460,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/tickers/{ticker}/today:
     get:
@@ -444,7 +483,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/tickers/{ticker}/history:
     get:
@@ -475,7 +514,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/sectors/today:
     get:
@@ -490,7 +529,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/holdings:
     get:
@@ -506,7 +545,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/news/today/summary:
     get:
@@ -533,7 +572,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleNewsSummaryResponse"
 
   /gpt/manual-pack/{date}:
     get:
@@ -557,7 +596,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
 
   /gpt/query:
     post:
@@ -578,4 +617,4 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenericResponse"
+                $ref: "#/components/schemas/FlexibleObject"
