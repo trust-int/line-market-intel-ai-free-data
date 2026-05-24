@@ -135,6 +135,76 @@ describe("GPT MVP endpoints", () => {
     }
   });
 
+  it("/internal/ingest/news rejects sources outside the ingest whitelist", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    process.env.NEWS_INGEST_ALLOWED_SOURCES = "manual_test";
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    vi.spyOn(db, "query").mockImplementation(async <T = unknown>(sql: string, params?: unknown[]) => {
+      queries.push({ sql, params });
+      return { rows: [] as T[], rowCount: 1 };
+    });
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/ingest/news`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer admin-test-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          items: [{
+            id: "bad-source-001",
+            source: "unknown_crawler",
+            title: "should be rejected"
+          }]
+        })
+      });
+      const body = await response.json() as { status: string; error: string; rejected_sources: string[] };
+      expect(response.status).toBe(403);
+      expect(body.status).toBe("error");
+      expect(body.error).toBe("source_not_allowed");
+      expect(body.rejected_sources).toEqual(["unknown_crawler"]);
+      expect(queries.some((query) => query.sql.includes("insert into news_items"))).toBe(false);
+      expect(queries.some((query) => query.sql.includes("insert into data_source_status"))).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("/internal/ingest/news honors NEWS_INGEST_ALLOWED_SOURCES override", async () => {
+    process.env.ADMIN_TOKEN = "admin-test-token";
+    process.env.NEWS_INGEST_ALLOWED_SOURCES = "trusted_crawler";
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    vi.spyOn(db, "query").mockImplementation(async <T = unknown>(sql: string, params?: unknown[]) => {
+      queries.push({ sql, params });
+      return { rows: [] as T[], rowCount: 1 };
+    });
+    const { base, close } = await startApp();
+    try {
+      const response = await fetch(`${base}/internal/ingest/news`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer admin-test-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          items: [{
+            id: "trusted-source-001",
+            source: "trusted_crawler",
+            title: "trusted source"
+          }]
+        })
+      });
+      const body = await response.json() as { status: string; inserted_or_updated: number };
+      expect(response.status).toBe(200);
+      expect(body.status).toBe("ok");
+      expect(body.inserted_or_updated).toBe(1);
+      expect(queries.some((query) => query.sql.includes("insert into news_items"))).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
   it("/gpt/news/today/summary clamps limit to 50", async () => {
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     vi.spyOn(db, "query").mockImplementation(async <T = unknown>(sql: string, params?: unknown[]) => {
@@ -149,6 +219,12 @@ describe("GPT MVP endpoints", () => {
       expect(response.status).toBe(200);
       expect(body.status).toBe("empty");
       expect(newsQuery?.params?.[0]).toBe(50);
+      expect(newsQuery?.params?.[1]).toMatch(/^\d{4}-\d{2}-\d{2}T15:30:00\+08:00$/);
+      expect(newsQuery?.params?.[2]).toMatch(/^\d{4}-\d{2}-\d{2}T15:30:00\+08:00$/);
+      expect(newsQuery?.sql).toContain("collected_at >= $2::timestamptz");
+      expect(newsQuery?.sql).toContain("collected_at < $3::timestamptz");
+      expect(newsQuery?.sql).toContain("coalesce(status, 'active') = 'active'");
+      expect(newsQuery?.sql).toContain("source <> 'manual_test'");
     } finally {
       close();
     }

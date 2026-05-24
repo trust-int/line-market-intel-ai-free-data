@@ -4,8 +4,8 @@ import { CostGuard } from "../cost/cost-guard.js";
 import { generateDailyReport } from "../reports/daily.js";
 import { generateIntradayReport } from "../reports/intraday.js";
 import { generateWeeklyReport } from "../reports/weekly.js";
-import { generateManualReportPack } from "../reports/manual-pack.js";
-import { todayTaipei } from "../utils/date.js";
+import { generateLineManualReportPack, generateManualReportPack } from "../reports/manual-pack.js";
+import { manualNewsWindowTaipei, todayTaipei } from "../utils/date.js";
 
 export type LineCommandResult = {
   handled: boolean;
@@ -78,14 +78,56 @@ export async function handleLineCommand(
       await database.query(scopedSql("update watchlist set active = false where ticker = $1", scope), scopedParams([arg], scope));
       return done(command, `已刪除觀察：${arg}`);
     case "/手動包":
-      await generateManualReportPack("ad_hoc");
-      return done(command, "手動包已產生。");
+      {
+        const result = await generateLineManualReportPack("ad_hoc", { database, scope, date: manualNewsWindowTaipei().date });
+        return done(command, `手動包已產生。LINE 訊息 ${result.lineMessageCount} 筆，新聞文字 ${result.lineManualNewsCount} 筆，附件 metadata ${result.attachmentMetadataCount} 筆。`);
+      }
     case "/今日新聞": {
-      const rows = await database.query<{ source: string; title?: string }>(
-        "select source, title from news_events where fetched_at::date = $1 order by fetched_at desc limit 20",
-        [todayTaipei()]
+      const newsWindow = manualNewsWindowTaipei();
+      const manualRows = await database.query<{ source: string; title?: string }>(
+        `select source, title
+           from news_items
+          where collected_at >= $1::timestamptz
+            and collected_at < $2::timestamptz
+            and coalesce(status, 'active') = 'active'
+            and source in ('line_manual', 'line_manual_pack', 'line_image_manual')
+          order by collected_at desc
+          limit 20`,
+        [newsWindow.start, newsWindow.end]
       );
-      return done(command, rows.rows.length ? rows.rows.map((row) => `[${row.source}] ${row.title ?? ""}`).join("\n") : "今日尚無新聞摘要。");
+      if (manualRows.rows.length) return done(command, manualRows.rows.map((row) => `[${row.source}] ${row.title ?? ""}`).join("\n"));
+      const rows = await database.query<{ source: string; title?: string }>(
+        "select source, title from news_events where fetched_at >= $1::timestamptz and fetched_at < $2::timestamptz order by fetched_at desc limit 20",
+        [newsWindow.start, newsWindow.end]
+      );
+      if (rows.rows.length) return done(command, rows.rows.map((row) => `[${row.source}] ${row.title ?? ""}`).join("\n"));
+      const lineRows = await database.query<{ raw_text?: string; extracted_text?: string; ai_summary?: string }>(
+        `select raw_text, extracted_text, ai_summary
+           from line_messages
+          where received_at >= $1::timestamptz
+            and received_at < $2::timestamptz
+            and status = 'active'
+            and message_type = 'text'
+            and coalesce(raw_text, extracted_text, ai_summary, '') not like '/%'
+          order by received_at desc
+          limit 20`,
+        [newsWindow.start, newsWindow.end]
+      );
+      return done(
+        command,
+        lineRows.rows.length
+          ? lineRows.rows.map((row) => `[LINE] ${String(row.extracted_text || row.ai_summary || row.raw_text || "").slice(0, 120)}`).join("\n")
+          : "今日尚無新聞摘要。"
+      );
+    }
+    case "/清空今日新聞": {
+      const result = await archiveTodayManualNews(database, "line_clear_today");
+      return done(command, (result.rowCount ?? 0) > 0 ? `已清空今日 manual news：${result.rowCount} 筆。` : "今日沒有可清空的 manual news。");
+    }
+    case "/刪除新聞": {
+      if (!arg || !/^\d{4}$/.test(arg)) return done(command, "格式：/刪除新聞 2330");
+      const result = await archiveTodayManualNews(database, "line_delete_ticker", arg);
+      return done(command, (result.rowCount ?? 0) > 0 ? `已刪除今日 ${arg} 相關 manual news：${result.rowCount} 筆。` : `今日沒有 ${arg} 相關 manual news。`);
     }
     case "/成本": {
       const usage = await new CostGuard().readUsage();
@@ -170,4 +212,27 @@ function valueAfter(args: string[], key: string): string | undefined {
 
 function looksLikeTheme(value: string): boolean {
   return ["半導體", "被動元件", "低基期", "AI", "獲利改善"].includes(value);
+}
+
+async function archiveTodayManualNews(database: Queryable, reason: string, ticker?: string) {
+  const newsWindow = manualNewsWindowTaipei();
+  const tickerFilter = ticker
+    ? ` and (
+          related_tickers ? $3
+          or title ilike '%' || $3 || '%'
+          or coalesce(summary, '') ilike '%' || $3 || '%'
+        )`
+    : "";
+  return database.query(
+    `update news_items
+        set status = 'archived',
+            archived_at = now(),
+            archived_reason = $${ticker ? 4 : 3}
+      where collected_at >= $1::timestamptz
+        and collected_at < $2::timestamptz
+        and coalesce(status, 'active') = 'active'
+        and source in ('line_manual', 'line_manual_pack', 'line_image_manual')
+        ${tickerFilter}`,
+    ticker ? [newsWindow.start, newsWindow.end, ticker, reason] : [newsWindow.start, newsWindow.end, reason]
+  );
 }

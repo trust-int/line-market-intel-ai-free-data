@@ -97,8 +97,8 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
        id, source, title, summary, full_text, source_url,
        related_tickers, related_sectors, event_type, importance,
        is_mops, data_quality_score, data_gaps,
-       interpretation_limit, collected_at
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()))
+       interpretation_limit, collected_at, status, archived_at, archived_reason
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()),'active',null,null)
      on conflict (id) do update set
        source = excluded.source,
        title = excluded.title,
@@ -113,7 +113,10 @@ export async function upsertLineManualNewsItem(database: Queryable, item: LineMa
        data_quality_score = excluded.data_quality_score,
        data_gaps = excluded.data_gaps,
        interpretation_limit = excluded.interpretation_limit,
-       collected_at = excluded.collected_at`,
+       collected_at = excluded.collected_at,
+       status = 'active',
+       archived_at = null,
+       archived_reason = null`,
     [
       item.id,
       item.source,

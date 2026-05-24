@@ -4,6 +4,21 @@ import type { Queryable } from "../db/client.js";
 import { db } from "../db/client.js";
 import { upsertDataSourceStatus } from "../repositories/data-source-status.repo.js";
 
+export const DEFAULT_ALLOWED_NEWS_INGEST_SOURCES = [
+  "manual_test",
+  "manual_admin",
+  "line_manual",
+  "line_manual_pack",
+  "line_image_manual",
+  "jin10",
+  "wallstreetcn",
+  "futu-news",
+  "twse_public",
+  "tpex_public",
+  "mops_public",
+  "rss_public"
+];
+
 const newsItemSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
@@ -41,6 +56,26 @@ export function createInternalIngestRouter(database: Queryable = db) {
       return;
     }
 
+    const allowedSources = getAllowedNewsIngestSources();
+    const rejectedSources = unique(parsed.data.items.map((item) => item.source).filter((source) => !allowedSources.has(source)));
+    if (rejectedSources.length) {
+      await upsertDataSourceStatus({
+        sourceName: "news_items",
+        status: "error",
+        reason: `source_not_allowed:${rejectedSources.join(",")}`,
+        lastUpdated: new Date(),
+        payloadSizeBytes: JSON.stringify(parsed.data).length
+      }, database).catch(() => undefined);
+
+      res.status(403).json({
+        status: "error",
+        error: "source_not_allowed",
+        rejected_sources: rejectedSources,
+        allowed_sources: [...allowedSources].sort()
+      });
+      return;
+    }
+
     try {
       let insertedOrUpdated = 0;
       for (const item of parsed.data.items) {
@@ -49,8 +84,8 @@ export function createInternalIngestRouter(database: Queryable = db) {
              id, source, title, summary, full_text, source_url,
              related_tickers, related_sectors, event_type, importance,
              is_mops, data_quality_score, data_gaps,
-             interpretation_limit, collected_at
-           ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()))
+             interpretation_limit, collected_at, status, archived_at, archived_reason
+           ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,coalesce($15::timestamptz, now()),'active',null,null)
            on conflict (id) do update set
              source = excluded.source,
              title = excluded.title,
@@ -65,7 +100,10 @@ export function createInternalIngestRouter(database: Queryable = db) {
              data_quality_score = excluded.data_quality_score,
              data_gaps = excluded.data_gaps,
              interpretation_limit = excluded.interpretation_limit,
-             collected_at = excluded.collected_at`,
+             collected_at = excluded.collected_at,
+             status = 'active',
+             archived_at = null,
+             archived_reason = null`,
           [
             item.id,
             item.source,
@@ -108,4 +146,17 @@ function isAdminAuthorized(header: string): boolean {
   const expected = process.env.ADMIN_TOKEN;
   const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
   return Boolean(expected && token && token === expected);
+}
+
+function getAllowedNewsIngestSources(): Set<string> {
+  const configured = parseCsv(process.env.NEWS_INGEST_ALLOWED_SOURCES);
+  return new Set(configured.length ? configured : DEFAULT_ALLOWED_NEWS_INGEST_SOURCES);
+}
+
+function parseCsv(value?: string): string[] {
+  return (value ?? "").split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }

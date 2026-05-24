@@ -133,7 +133,13 @@ MVP 指令：
 - `/刪除觀察 2454`
 - `/手動包`
 - `/今日新聞`
+- `/news 文字內容`：收進今日 `news_items`，可由 GPT Action `/gpt/news/today/summary` 讀取
+- `/manual 文字內容`：收進今日 manual pack note，供 GPT Action 摘要讀取
+- `/清空今日新聞`：封存今日 LINE manual news，不再提供給 GPT summary
+- `/刪除新聞 2330`：封存今日指定代號相關 LINE manual news
 - `/成本`
+
+`/gpt/news/today/summary` 以台北時間 15:30 作為每日切換點，只讀目前盤後資料日、`status=active` 的 `news_items`，並排除測試來源與明顯的 API 錯誤回覆。清空與刪除指令只做封存，不會硬刪資料，方便之後追查。
 
 ## Supabase / PostgreSQL
 
@@ -166,6 +172,7 @@ MVP 指令：
 DATABASE_URL=postgresql://...
 ADMIN_TOKEN=內部 ingest 用長隨機字串
 GPT_ACTION_BEARER_TOKEN=Custom GPT Action Bearer token
+NEWS_INGEST_ALLOWED_SOURCES=manual_test,manual_admin,line_manual,line_manual_pack,line_image_manual,jin10,wallstreetcn,futu-news,twse_public,tpex_public,mops_public,rss_public
 ```
 
 執行 migration：
@@ -420,6 +427,8 @@ Authorization: Bearer <ADMIN_TOKEN>
 crawler -> POST /internal/ingest/news -> news_items -> GET /gpt/news/today/summary -> GPT
 ```
 
+`/internal/ingest/news` 會先檢查 `ADMIN_TOKEN`，再檢查每筆 `source` 是否在 `NEWS_INGEST_ALLOWED_SOURCES`。未列入白名單的 crawler/source 會回 `403 source_not_allowed`，整批不寫入 `news_items`，並更新 `data_source_status` 的錯誤原因。
+
 候選股與族群 MVP builder：
 
 ```bash
@@ -431,6 +440,7 @@ Render 必要環境變數至少包含：
 
 - `DATABASE_URL`
 - `ADMIN_TOKEN`
+- `NEWS_INGEST_ALLOWED_SOURCES`
 - `GPT_ACTION_BEARER_TOKEN`
 - 既有 LINE secrets：`LINE_CHANNEL_SECRET`、`LINE_CHANNEL_ACCESS_TOKEN`、`USER_HASH_SECRET`
 

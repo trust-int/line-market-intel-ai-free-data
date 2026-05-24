@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TickerCandidate } from "../analysis/ticker-candidate-engine.js";
 import { db, type Queryable } from "../db/client.js";
-import { todayTaipei } from "../utils/date.js";
+import { manualNewsWindowTaipei, todayTaipei } from "../utils/date.js";
 import { requireGptActionAuth } from "./auth.js";
 
 type AnyRecord = Record<string, unknown>;
@@ -151,9 +151,9 @@ export function createGptActionRouter(database: Queryable = db) {
 
   router.get("/news/today/summary", async (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit ?? 20), 1), 50);
+    const newsWindow = manualNewsWindowTaipei();
     try {
-      const [newsRows, lineRows] = await Promise.all([
-        database.query(
+      const newsRows = await database.query(
         `select source, source_url, title, summary, full_text,
                 related_tickers as tickers,
                 related_sectors as topics,
@@ -169,45 +169,31 @@ export function createGptActionRouter(database: Queryable = db) {
                 collected_at as fetched_at,
                 collected_at
          from news_items
-         where collected_at >= now() - interval '36 hours'
+         where collected_at >= $2::timestamptz
+           and collected_at < $3::timestamptz
+           and coalesce(status, 'active') = 'active'
+           and source <> 'manual_test'
+           and not (
+             source in ('line_manual', 'line_manual_pack')
+             and (
+               coalesce(title, '') ilike '%unauthorized%'
+               or coalesce(summary, '') ilike '%unauthorized%'
+               or coalesce(title, '') ilike '%ClientResponseError%'
+               or coalesce(summary, '') ilike '%ClientResponseError%'
+               or coalesce(summary, '') ilike '%GET /gpt/%'
+               or coalesce(summary, '') ilike '%資料不足，不給操作建議%'
+             )
+           )
          order by case importance when 'high' then 1 when 'medium' then 2 when 'low' then 3 else 4 end,
                   collected_at desc
          limit $1`,
-        [limit]
-        ),
-        database.query(
-          `select 'line_manual' as source,
-                  null::text as source_url,
-                  coalesce(extracted_text, ai_summary, raw_text) as title,
-                  coalesce(extracted_text, ai_summary, raw_text) as summary,
-                  null::text as full_text,
-                  tickers,
-                  topics,
-                  'manual' as event_type,
-                  null::numeric as event_importance,
-                  'medium' as importance,
-                  false as is_mops,
-                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then 65 else 55 end as data_quality_score,
-                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then '["full_text_missing"]'::jsonb else '["full_text_missing","summary_too_short"]'::jsonb end as data_gaps,
-                  case when length(coalesce(extracted_text, ai_summary, raw_text, '')) >= 80 then 'title_or_summary_only' else 'brief_manual_note_only' end as interpretation_limit,
-                  'user_provided_or_forwarded' as license_status,
-                  received_at as published_at,
-                  received_at as fetched_at,
-                  received_at as collected_at
-             from line_messages
-            where (received_at at time zone 'Asia/Taipei')::date = $2
-              and status = 'active'
-              and message_type = 'text'
-              and coalesce(raw_text, extracted_text, ai_summary, '') not like '/%'
-            order by received_at desc
-            limit $1`,
-          [limit, todayTaipei()]
-        )
-      ]);
-      const items = [...newsRows.rows, ...lineRows.rows].slice(0, limit).map((row) => summarizeNewsRow(row as AnyRecord));
+        [limit, newsWindow.start, newsWindow.end]
+      );
+      const items = newsRows.rows.slice(0, limit).map((row) => summarizeNewsRow(row as AnyRecord));
       res.json({
         status: items.length ? "ok" : "empty",
-        date: todayTaipei(),
+        date: newsWindow.date,
+        manual_news_window: newsWindow,
         limit,
         items,
         line_manual_news: items,
@@ -216,35 +202,37 @@ export function createGptActionRouter(database: Queryable = db) {
         data_gaps: items.length ? [] : ["news_empty"]
       });
     } catch {
-      res.json({ status: "empty", date: todayTaipei(), limit, items: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
+      res.json({ status: "empty", date: newsWindow.date, manual_news_window: newsWindow, limit, items: [], data_available: false, empty_reason: "db_unavailable", data_gaps: ["db_unavailable"] });
     }
   });
 
   router.get("/news/today", async (_req, res) => {
+    const newsWindow = manualNewsWindowTaipei();
     try {
-      const [newsRows, lineRows] = await Promise.all([
-        database.query("select * from news_events where fetched_at::date = $1 order by fetched_at desc", [todayTaipei()]),
+      const [newsRows, newsItemRows] = await Promise.all([
         database.query(
-          `select 'line_manual' as source,
-                  null::text as source_url,
-                  coalesce(extracted_text, ai_summary, raw_text) as title,
-                  coalesce(extracted_text, ai_summary, raw_text) as summary,
-                  tickers,
-                  topics,
-                  received_at as fetched_at,
-                  'user_provided_or_forwarded' as license_status
-             from line_messages
-            where (received_at at time zone 'Asia/Taipei')::date = $1
-              and status = 'active'
-              and message_type = 'text'
-              and coalesce(raw_text, extracted_text, ai_summary, '') not like '/%'
-            order by received_at desc`,
-          [todayTaipei()]
+          "select * from news_events where fetched_at >= $1::timestamptz and fetched_at < $2::timestamptz order by fetched_at desc",
+          [newsWindow.start, newsWindow.end]
+        ),
+        database.query(
+          `select source, source_url, title, summary,
+                  related_tickers as tickers,
+                  related_sectors as topics,
+                  collected_at as fetched_at,
+                  interpretation_limit as license_status
+             from news_items
+            where collected_at >= $1::timestamptz
+              and collected_at < $2::timestamptz
+              and coalesce(status, 'active') = 'active'
+              and source <> 'manual_test'
+            order by collected_at desc
+            limit 50`,
+          [newsWindow.start, newsWindow.end]
         )
       ]);
-      res.json({ date: todayTaipei(), rows: [...newsRows.rows, ...lineRows.rows], line_manual_rows: lineRows.rows.length });
+      res.json({ date: newsWindow.date, manual_news_window: newsWindow, rows: [...newsRows.rows, ...newsItemRows.rows], line_manual_rows: newsItemRows.rows.length });
     } catch {
-      res.json({ date: todayTaipei(), rows: [], data_gap: "db_unavailable" });
+      res.json({ date: newsWindow.date, manual_news_window: newsWindow, rows: [], data_gap: "db_unavailable" });
     }
   });
 
