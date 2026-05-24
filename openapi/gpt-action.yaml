@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: LINE Market Intel GPT Action API
-  version: 0.2.1
+  version: 0.2.2
   description: >
     Personal LINE and Taiwan market intelligence API.
     Returns user-owned market reports, manual news, holdings, watchlist,
@@ -14,12 +14,17 @@ servers:
 
 security:
   - bearerAuth: []
+  - apiKeyAuth: []
 
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
 
   schemas:
     FlexibleObject:
